@@ -17,7 +17,7 @@ const TrayManager = require('./tray');
 const UpdaterService = require('./updater');
 
 // ─── Configuration ───────────────────────────────────────────────
-const FRAPPE_URL = 'https://erp.optibot.cn:8080/';
+const FRAPPE_URL = 'http://erp.optibot.cn:8080/';
 const store = new Store({
   defaults: {
     windowBounds: { width: 1400, height: 900 },
