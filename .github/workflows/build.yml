@@ -1,14 +1,12 @@
 name: Build Desktop Installer
 
 on:
-  # Trigger on push to main branch
   push:
     branches:
       - main
     tags:
       - 'v*'
 
-  # Manual trigger
   workflow_dispatch:
     inputs:
       version:
@@ -26,13 +24,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ★ Print commit info to verify which code is being built
+      - name: Verify source code
+        run: |
+          echo "=== Building commit: $(git rev-parse --short HEAD) ==="
+          echo "=== Commit message: $(git log -1 --pretty=format:'%s') ==="
+          echo "=== Date: $(git log -1 --pretty=format:'%ci') ==="
+          echo "=== index.js FRAPPE_URL ==="
+          findstr "FRAPPE_URL" src/main/index.js || echo "NOT FOUND"
+          echo "=== Menu.setApplicationMenu ==="
+          findstr "setApplicationMenu" src/main/index.js || echo "NOT FOUND"
+          echo "=== isQuitting ==="
+          findstr "isQuitting" src/main/index.js || echo "NOT FOUND"
+        shell: cmd
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # ★ Clean install, no cache
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm cache clean --force
+          npm install --no-cache
+        shell: cmd
 
       - name: Get version
         id: version
@@ -53,7 +69,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OptiBot-ERP-Windows-${{ steps.version.outputs.version }}
+          name: OptiBot-ERP-Windows-${{ steps.version.outputs.version }}-${{ github.sha }}
           path: |
             build/*.exe
             build/latest.yml
@@ -68,13 +84,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify source code
+        run: |
+          echo "=== Building commit: $(git rev-parse --short HEAD) ==="
+          grep "FRAPPE_URL" src/main/index.js
+          grep "setApplicationMenu" src/main/index.js
+          grep "isQuitting" src/main/index.js
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          npm cache clean --force
+          npm install --no-cache
 
       - name: Get version
         id: version
@@ -95,14 +120,13 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OptiBot-ERP-macOS-${{ steps.version.outputs.version }}
+          name: OptiBot-ERP-macOS-${{ steps.version.outputs.version }}-${{ github.sha }}
           path: |
             build/*.dmg
             build/*.zip
             build/latest-mac.yml
           retention-days: 30
 
-  # Release: collect all platform artifacts
   release:
     name: Create Release
     needs: [build-windows, build-mac]
