@@ -7,8 +7,16 @@
 
 const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const log = require('electron-log');
 const Store = require('electron-store');
+
+// ★ Remove ALL default menus immediately (before anything else)
+Menu.setApplicationMenu(null);
+
+// ★ Allow loading HTTP pages (disable web security for remote HTTP content)
+app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
+app.commandLine.appendSwitch('ignore-certificate-errors', 'true');
 
 const ScaleService = require('./scale-service');
 const PrinterService = require('./printer-service');
@@ -35,6 +43,7 @@ let printerService = null;
 let fontPreloader = null;
 let trayManager = null;
 let updaterService = null;
+let isQuitting = false;
 
 // ─── Logging ─────────────────────────────────────────────────────
 log.transports.file.level = 'info';
@@ -51,14 +60,28 @@ function createMainWindow() {
     minHeight: 600,
     title: 'OptiBot ERP',
     icon: path.join(__dirname, '../../assets/icon.ico'),
+    // ★ Remove menu bar completely
+    autoHideMenuBar: true,
+    // ★ Start hidden, show after page loads (avoid white flash)
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      // Allow loading remote content with preload
-      webSecurity: true,
+      // ★ Allow loading remote HTTP content
+      webSecurity: false,
+      allowRunningInsecureContent: true,
     },
+  });
+
+  // ★ Force remove menu after window creation (double safety)
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.setAutoHideMenuBar(true);
+
+  // Show window once page is ready
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
   });
 
   // Load the remote Frappe application
@@ -70,16 +93,15 @@ function createMainWindow() {
     store.set('windowBounds', { width: bounds.width, height: bounds.height });
   });
 
-  // Minimize to tray on close instead of quitting
+  // ★ Intercept close: minimize to tray instead of quitting
   mainWindow.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
       if (trayManager) {
         trayManager.showBalloon();
       }
     }
-    return false;
   });
 
   mainWindow.on('closed', () => {
@@ -103,8 +125,12 @@ function createMainWindow() {
   // Handle navigation (SPA routing)
   mainWindow.webContents.on('did-navigate-in-page', () => {
     log.debug('In-page navigation detected');
-    // Re-inject bridge after SPA navigation
     _injectBridge();
+  });
+
+  // Log page load failures for debugging
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    log.error(`Page load failed: ${errorCode} - ${errorDescription}`);
   });
 
   return mainWindow;
@@ -117,7 +143,6 @@ function _injectBridge() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
   const bridgePath = path.join(__dirname, '../renderer/bridge.js');
-  const fs = require('fs');
 
   try {
     const bridgeCode = fs.readFileSync(bridgePath, 'utf-8');
@@ -133,33 +158,18 @@ function _injectBridge() {
 function registerIPCHandlers() {
   // ── Scale IPC ──
   ipcMain.handle('scale:list-ports', async () => {
-    try {
-      return await scaleService.listPorts();
-    } catch (err) {
-      log.error('scale:list-ports error:', err);
-      throw err;
-    }
+    return await scaleService.listPorts();
   });
 
   ipcMain.handle('scale:connect', async (_event, port) => {
-    try {
-      await scaleService.connect(port);
-      store.set('lastScalePort', port);
-      return { success: true };
-    } catch (err) {
-      log.error('scale:connect error:', err);
-      throw err;
-    }
+    await scaleService.connect(port);
+    store.set('lastScalePort', port);
+    return { success: true };
   });
 
   ipcMain.handle('scale:disconnect', async () => {
-    try {
-      await scaleService.disconnect();
-      return { success: true };
-    } catch (err) {
-      log.error('scale:disconnect error:', err);
-      throw err;
-    }
+    await scaleService.disconnect();
+    return { success: true };
   });
 
   ipcMain.handle('scale:get-status', () => {
@@ -168,21 +178,11 @@ function registerIPCHandlers() {
 
   // ── Printer IPC ──
   ipcMain.handle('printer:list', async () => {
-    try {
-      return await printerService.listPrinters();
-    } catch (err) {
-      log.error('printer:list error:', err);
-      throw err;
-    }
+    return await printerService.listPrinters();
   });
 
   ipcMain.handle('printer:print', async (_event, printerId, zplData) => {
-    try {
-      return await printerService.printZPL(printerId, zplData);
-    } catch (err) {
-      log.error('printer:print error:', err);
-      throw err;
-    }
+    return await printerService.printZPL(printerId, zplData);
   });
 
   ipcMain.handle('printer:get-status', () => {
@@ -190,13 +190,8 @@ function registerIPCHandlers() {
   });
 
   ipcMain.handle('printer:preload-font', async (_event, printerId) => {
-    try {
-      await fontPreloader.preloadFont(printerId);
-      return { success: true };
-    } catch (err) {
-      log.error('printer:preload-font error:', err);
-      throw err;
-    }
+    await fontPreloader.preloadFont(printerId);
+    return { success: true };
   });
 
   ipcMain.handle('printer:is-font-loaded', (_event, printerId) => {
@@ -229,7 +224,6 @@ function initServices() {
     averageWindow: store.get('scaleAverageWindow'),
   });
 
-  // Forward weight data to renderer
   scaleService.on('weight', (weight) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('scale:weight', weight);
@@ -267,8 +261,6 @@ function initServices() {
 
   // Font preloader
   fontPreloader = new FontPreloader(printerService);
-
-  // Link font preloader to printer service
   printerService.setFontPreloader(fontPreloader);
 
   // USB hot-plug: auto-preload font when TSC printer is connected
@@ -286,7 +278,6 @@ function initServices() {
     fontPreloader.markUnloaded(printerId);
   });
 
-  // Initialize USB watcher
   printerService.initUSBWatcher();
 
   // Auto-connect scale if configured
@@ -300,7 +291,7 @@ function initServices() {
       } catch (err) {
         log.warn(`Auto-connect scale failed on ${lastPort}:`, err.message);
       }
-    }, 3000); // Wait 3s after startup
+    }, 3000);
   }
 
   // Auto-preload fonts for connected printers
@@ -314,9 +305,9 @@ function initServices() {
     } catch (err) {
       log.warn('Auto font preload on startup failed:', err.message);
     }
-  }, 5000); // Wait 5s after startup
+  }, 5000);
 
-  // Tray manager
+  // ★ Create tray BEFORE assigning close handler
   trayManager = new TrayManager(mainWindow);
 
   // Updater
@@ -327,8 +318,9 @@ function initServices() {
 // ─── App Lifecycle ───────────────────────────────────────────────
 app.whenReady().then(() => {
   log.info('OptiBot ERP Desktop starting...');
+  log.info(`Target URL: ${FRAPPE_URL}`);
 
-  // ★ Remove all default menus (File, Edit, View, etc.)
+  // ★ Ensure menu is removed (again, for safety)
   Menu.setApplicationMenu(null);
 
   registerIPCHandlers();
@@ -344,25 +336,22 @@ app.whenReady().then(() => {
   });
 });
 
+// ★ Set isQuitting flag on before-quit
 app.on('before-quit', () => {
-  app.isQuitting = true;
-
-  // Cleanup services
-  if (scaleService) {
-    scaleService.destroy();
-  }
-  if (printerService) {
-    printerService.destroy();
-  }
-  if (trayManager) {
-    trayManager.destroy();
-  }
+  isQuitting = true;
 });
 
-// ★ Do NOT quit when all windows are closed — keep running in system tray
-app.on('window-all-closed', () => {
-  // Intentionally empty: app stays alive in tray
-  // Only quits via tray menu "退出" or app.quit()
+app.on('quit', () => {
+  // Cleanup services
+  if (scaleService) scaleService.destroy();
+  if (printerService) printerService.destroy();
+  if (trayManager) trayManager.destroy();
+});
+
+// ★ Do NOT quit when all windows are closed — keep running in tray
+app.on('window-all-closed', (e) => {
+  // Prevent default quit behavior
+  e.preventDefault();
 });
 
 // Handle uncaught errors gracefully
