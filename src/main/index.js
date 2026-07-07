@@ -1,22 +1,18 @@
 /**
  * OptiBot ERP Desktop Application - Main Process Entry Point
- *
- * Loads the remote Frappe ERP application in a BrowserWindow and
- * initializes hardware services (electronic scale + label printer).
  */
 
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const log = require('electron-log');
 const Store = require('electron-store');
 
-// ★ Remove ALL default menus immediately (before anything else)
-Menu.setApplicationMenu(null);
+// ★ Global flag shared across modules
+global.isQuitting = false;
 
-// ★ Allow loading HTTP pages (disable web security for remote HTTP content)
-app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
-app.commandLine.appendSwitch('ignore-certificate-errors', 'true');
+// ★ Remove menu BEFORE app ready
+Menu.setApplicationMenu(null);
 
 const ScaleService = require('./scale-service');
 const PrinterService = require('./printer-service');
@@ -43,11 +39,11 @@ let printerService = null;
 let fontPreloader = null;
 let trayManager = null;
 let updaterService = null;
-let isQuitting = false;
 
 // ─── Logging ─────────────────────────────────────────────────────
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
+log.info(`OptiBot ERP starting, target URL: ${FRAPPE_URL}`);
 
 // ─── Window Creation ─────────────────────────────────────────────
 function createMainWindow() {
@@ -60,32 +56,22 @@ function createMainWindow() {
     minHeight: 600,
     title: 'OptiBot ERP',
     icon: path.join(__dirname, '../../assets/icon.ico'),
-    // ★ Remove menu bar completely
+    show: true, // Show immediately for debugging
+    // ★ Force no menu
     autoHideMenuBar: true,
-    // ★ Start hidden, show after page loads (avoid white flash)
-    show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      // ★ Allow loading remote HTTP content
       webSecurity: false,
       allowRunningInsecureContent: true,
     },
   });
 
-  // ★ Force remove menu after window creation (double safety)
+  // ★ Force hide menu bar (multiple methods for reliability)
   mainWindow.setMenuBarVisibility(false);
-  mainWindow.setAutoHideMenuBar(true);
-
-  // Show window once page is ready
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-  });
-
-  // Load the remote Frappe application
-  mainWindow.loadURL(FRAPPE_URL);
+  mainWindow.removeMenu();
 
   // Save window size on resize
   mainWindow.on('resize', () => {
@@ -95,7 +81,7 @@ function createMainWindow() {
 
   // ★ Intercept close: minimize to tray instead of quitting
   mainWindow.on('close', (event) => {
-    if (!isQuitting) {
+    if (!global.isQuitting) {
       event.preventDefault();
       mainWindow.hide();
       if (trayManager) {
@@ -116,21 +102,84 @@ function createMainWindow() {
     }
   });
 
+  // ★ Show debug dialog: confirm URL before loading
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'OptiBot ERP - 调试信息',
+    message: '即将加载以下页面：',
+    detail: `URL: ${FRAPPE_URL}\n\n版本: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nChrome: ${process.versions.chrome}\n平台: ${process.platform}\n\n点击"确定"继续加载，点击"取消"打开开发者工具。`,
+    buttons: ['确定 - 加载页面', '取消 - 打开调试工具'],
+    defaultId: 0,
+    cancelId: 1,
+  }).then((result) => {
+    if (result.response === 1) {
+      // User clicked cancel - open DevTools for debugging
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
+
+    log.info(`Loading URL: ${FRAPPE_URL}`);
+    mainWindow.loadURL(FRAPPE_URL).then(() => {
+      log.info('Page loaded successfully');
+    }).catch((err) => {
+      log.error('Page load failed:', err.message);
+      // ★ Show error dialog
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: '页面加载失败',
+        message: '无法加载 ERP 页面',
+        detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
+        buttons: ['重试', '退出'],
+        defaultId: 0,
+      }).then((r) => {
+        if (r.response === 0) {
+          mainWindow.loadURL(FRAPPE_URL);
+        } else {
+          global.isQuitting = true;
+          app.quit();
+        }
+      });
+    });
+  });
+
+  // ★ Page load failure handler
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    log.error(`Page load failed: ${errorCode} - ${errorDescription} (${validatedURL})`);
+
+    dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: '页面加载失败',
+      message: `错误代码: ${errorCode}`,
+      detail: `描述: ${errorDescription}\nURL: ${validatedURL || FRAPPE_URL}\n\n点击"重试"重新加载。`,
+      buttons: ['重试', '打开调试工具', '退出'],
+      defaultId: 0,
+    }).then((r) => {
+      if (r.response === 0) {
+        mainWindow.loadURL(FRAPPE_URL);
+      } else if (r.response === 1) {
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
+        mainWindow.loadURL(FRAPPE_URL);
+      } else {
+        global.isQuitting = true;
+        app.quit();
+      }
+    });
+  });
+
   // Inject bridge script after page loads
   mainWindow.webContents.on('did-finish-load', () => {
     log.info('Frappe page loaded successfully');
     _injectBridge();
   });
 
-  // Handle navigation (SPA routing)
+  // Handle SPA navigation
   mainWindow.webContents.on('did-navigate-in-page', () => {
     log.debug('In-page navigation detected');
     _injectBridge();
   });
 
-  // Log page load failures for debugging
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    log.error(`Page load failed: ${errorCode} - ${errorDescription}`);
+  // Log the page title after load
+  mainWindow.webContents.on('page-title-updated', (event, title) => {
+    log.info(`Page title: ${title}`);
   });
 
   return mainWindow;
@@ -156,7 +205,6 @@ function _injectBridge() {
 
 // ─── IPC Handlers ────────────────────────────────────────────────
 function registerIPCHandlers() {
-  // ── Scale IPC ──
   ipcMain.handle('scale:list-ports', async () => {
     return await scaleService.listPorts();
   });
@@ -176,7 +224,6 @@ function registerIPCHandlers() {
     return scaleService.getStatus();
   });
 
-  // ── Printer IPC ──
   ipcMain.handle('printer:list', async () => {
     return await printerService.listPrinters();
   });
@@ -198,7 +245,6 @@ function registerIPCHandlers() {
     return fontPreloader.isFontLoaded(printerId);
   });
 
-  // ── App IPC ──
   ipcMain.handle('app:get-version', () => {
     return app.getVersion();
   });
@@ -219,7 +265,6 @@ function registerIPCHandlers() {
 
 // ─── Service Initialization ──────────────────────────────────────
 function initServices() {
-  // Scale service
   scaleService = new ScaleService({
     averageWindow: store.get('scaleAverageWindow'),
   });
@@ -237,13 +282,9 @@ function initServices() {
   });
 
   scaleService.on('error', (error) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('scale:error', error.message || error);
-    }
     log.error('Scale error:', error);
   });
 
-  // Printer service
   printerService = new PrinterService();
 
   printerService.on('status', (status) => {
@@ -253,19 +294,13 @@ function initServices() {
   });
 
   printerService.on('error', (error) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('printer:error', error.message || error);
-    }
     log.error('Printer error:', error);
   });
 
-  // Font preloader
   fontPreloader = new FontPreloader(printerService);
   printerService.setFontPreloader(fontPreloader);
 
-  // USB hot-plug: auto-preload font when TSC printer is connected
   printerService.on('printer-attached', async (printerId) => {
-    log.info(`TSC printer attached: ${printerId}`);
     try {
       await fontPreloader.preloadFont(printerId);
     } catch (err) {
@@ -274,40 +309,37 @@ function initServices() {
   });
 
   printerService.on('printer-detached', (printerId) => {
-    log.info(`TSC printer detached: ${printerId}`);
     fontPreloader.markUnloaded(printerId);
   });
 
   printerService.initUSBWatcher();
 
-  // Auto-connect scale if configured
+  // Auto-connect scale
   const lastPort = store.get('lastScalePort');
   const autoConnect = store.get('autoConnectScale');
   if (autoConnect && lastPort) {
     setTimeout(async () => {
       try {
         await scaleService.connect(lastPort);
-        log.info(`Auto-connected scale on port: ${lastPort}`);
       } catch (err) {
-        log.warn(`Auto-connect scale failed on ${lastPort}:`, err.message);
+        log.warn('Auto-connect scale failed:', err.message);
       }
     }, 3000);
   }
 
-  // Auto-preload fonts for connected printers
+  // Auto-preload fonts
   setTimeout(async () => {
     try {
       const printers = await printerService.listPrinters();
       for (const printer of printers) {
         await fontPreloader.preloadFont(printer.id);
-        log.info(`Auto-preloaded font for printer: ${printer.id}`);
       }
     } catch (err) {
-      log.warn('Auto font preload on startup failed:', err.message);
+      log.warn('Auto font preload failed:', err.message);
     }
   }, 5000);
 
-  // ★ Create tray BEFORE assigning close handler
+  // Tray manager
   trayManager = new TrayManager(mainWindow);
 
   // Updater
@@ -317,10 +349,9 @@ function initServices() {
 
 // ─── App Lifecycle ───────────────────────────────────────────────
 app.whenReady().then(() => {
-  log.info('OptiBot ERP Desktop starting...');
-  log.info(`Target URL: ${FRAPPE_URL}`);
+  log.info('App ready, creating window...');
 
-  // ★ Ensure menu is removed (again, for safety)
+  // ★ Ensure no menu
   Menu.setApplicationMenu(null);
 
   registerIPCHandlers();
@@ -336,25 +367,21 @@ app.whenReady().then(() => {
   });
 });
 
-// ★ Set isQuitting flag on before-quit
 app.on('before-quit', () => {
-  isQuitting = true;
+  global.isQuitting = true;
 });
 
 app.on('quit', () => {
-  // Cleanup services
   if (scaleService) scaleService.destroy();
   if (printerService) printerService.destroy();
   if (trayManager) trayManager.destroy();
 });
 
-// ★ Do NOT quit when all windows are closed — keep running in tray
-app.on('window-all-closed', (e) => {
-  // Prevent default quit behavior
-  e.preventDefault();
+// ★ Do NOT quit when all windows closed — stay in tray
+app.on('window-all-closed', () => {
+  // Intentionally empty: keep app alive in tray
 });
 
-// Handle uncaught errors gracefully
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception:', error);
 });

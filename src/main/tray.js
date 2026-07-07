@@ -2,7 +2,7 @@
  * System Tray Manager
  *
  * Creates a system tray icon with context menu for the OptiBot ERP desktop app.
- * Allows users to show/hide the main window and access common actions.
+ * Single-click tray icon to restore window.
  */
 
 const { Tray, Menu, nativeImage, app } = require('electron');
@@ -10,21 +10,13 @@ const path = require('path');
 const log = require('electron-log');
 
 class TrayManager {
-  /**
-   * @param {BrowserWindow} mainWindow - The main application window
-   */
   constructor(mainWindow) {
     this.mainWindow = mainWindow;
     this.tray = null;
     this._create();
   }
 
-  /**
-   * Create the system tray icon and menu
-   * @private
-   */
   _create() {
-    // ★ Use icon.ico for system tray (same as app icon)
     const iconPath = path.join(__dirname, '../../assets/icon.ico');
 
     try {
@@ -32,7 +24,6 @@ class TrayManager {
       if (icon.isEmpty()) {
         throw new Error('Empty icon');
       }
-      // Resize to 16x16 for tray (ico contains multiple sizes, pick small one)
       icon = icon.resize({ width: 16, height: 16 });
 
       this.tray = new Tray(icon);
@@ -40,9 +31,14 @@ class TrayManager {
 
       this._updateMenu();
 
-      // Double-click to show window
+      // ★ Single click to toggle window visibility
+      this.tray.on('click', () => {
+        this._toggleWindow();
+      });
+
+      // Double click also works
       this.tray.on('double-click', () => {
-        this._showWindow();
+        this._toggleWindow();
       });
 
       log.info('System tray created');
@@ -51,10 +47,6 @@ class TrayManager {
     }
   }
 
-  /**
-   * Update the context menu
-   * @private
-   */
   _updateMenu() {
     if (!this.tray) return;
 
@@ -62,10 +54,6 @@ class TrayManager {
       {
         label: '显示主窗口',
         click: () => this._showWindow(),
-      },
-      {
-        label: '隐藏主窗口',
-        click: () => this._hideWindow(),
       },
       { type: 'separator' },
       {
@@ -87,18 +75,10 @@ class TrayManager {
       },
       { type: 'separator' },
       {
-        label: '检查更新',
-        click: () => {
-          if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-            this.mainWindow.webContents.send('menu:action', 'check-update');
-          }
-        },
-      },
-      { type: 'separator' },
-      {
         label: '退出',
         click: () => {
-          app.isQuitting = true;
+          // ★ Must set the global flag so close handler allows quit
+          global.isQuitting = true;
           app.quit();
         },
       },
@@ -108,41 +88,59 @@ class TrayManager {
   }
 
   /**
-   * Show the main window
-   * @private
+   * Toggle window: if hidden → show, if shown → hide
    */
-  _showWindow() {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      this.mainWindow.show();
-      this.mainWindow.focus();
+  _toggleWindow() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+
+    if (this.mainWindow.isVisible()) {
+      this.mainWindow.hide();
+    } else {
+      this._showWindow();
     }
   }
 
   /**
-   * Hide the main window
-   * @private
+   * Show and restore window to original size
    */
+  _showWindow() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+
+    // Restore if minimized
+    if (this.mainWindow.isMinimized()) {
+      this.mainWindow.restore();
+    }
+
+    // Show and focus
+    this.mainWindow.show();
+    this.mainWindow.focus();
+
+    // Bring to front on Windows
+    if (process.platform === 'win32') {
+      this.mainWindow.setAlwaysOnTop(true);
+      setTimeout(() => {
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+          this.mainWindow.setAlwaysOnTop(false);
+        }
+      }, 100);
+    }
+  }
+
   _hideWindow() {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.hide();
     }
   }
 
-  /**
-   * Show a balloon notification (Windows only)
-   */
   showBalloon() {
     if (this.tray) {
       this.tray.displayBalloon({
         title: 'OptiBot ERP',
-        content: '应用程序正在后台运行，双击托盘图标可重新打开窗口。',
+        content: '应用程序正在后台运行，单击托盘图标可重新打开窗口。',
       });
     }
   }
 
-  /**
-   * Destroy the tray icon
-   */
   destroy() {
     if (this.tray) {
       this.tray.destroy();
