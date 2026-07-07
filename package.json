@@ -1,0 +1,70 @@
+{
+  "name": "optibot-erp-desktop",
+  "version": "1.0.0",
+  "description": "OptiBot ERP Desktop Application - Frappe ERP with scale and label printer integration",
+  "main": "src/main/index.js",
+  "author": "OptiBot",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "cross-env NODE_ENV=development electron .",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir",
+    "build:linux": "electron-builder --linux",
+    "rebuild": "npx @electron/rebuild -f -w serialport,usb",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "electron-log": "^5.1.1",
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.1.7",
+    "serialport": "^12.0.0",
+    "usb": "^2.11.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "cross-env": "^7.0.3",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.optibot.erp-desktop",
+    "productName": "OptiBot ERP",
+    "directories": {
+      "output": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "npmRebuild": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OptiBot ERP",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
+    },
+    "extraResources": [
+      {
+        "from": "assets/fonts",
+        "to": "fonts",
+        "filter": ["**/*"]
+      }
+    ]
+  }
+}

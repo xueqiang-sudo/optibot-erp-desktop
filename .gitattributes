@@ -1,0 +1,9 @@
+# Ensure consistent line endings
+* text=auto eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.ico binary
+*.png binary
+*.ttf binary

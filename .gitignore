@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+*.log
+.env
+.DS_Store
+Thumbs.db
+
+# Font files are too large for typical git repos
+assets/fonts/*.ttf
+!assets/fonts/.gitkeep
+
+# Electron builder output
+out/
+node_modules.tar.gz

@@ -1,0 +1,114 @@
+name: Build Windows Installer
+
+on:
+  # Trigger on version tags
+  push:
+    tags:
+      - 'v*'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g., 1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+        env:
+          # Ensure native modules compile for Electron
+          npm_config_runtime: electron
+          npm_config_target: 28.3.3
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build installer
+        run: npm run build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiBot-ERP-Setup-${{ steps.version.outputs.version }}
+          path: |
+            build/*.exe
+            build/latest.yml
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/*.exe
+            build/latest.yml
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: also build Linux version
+  build-linux:
+    name: Build Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Uncomment to enable Linux builds
+    if: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libusb-1.0-0-dev
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Linux package
+        run: npx electron-builder --linux AppImage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiBot-ERP-Linux
+          path: build/*.AppImage
+          retention-days: 30
