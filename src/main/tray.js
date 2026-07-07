@@ -24,21 +24,16 @@ class TrayManager {
    * @private
    */
   _create() {
-    const iconPath = path.join(__dirname, '../../assets/tray-icon.png');
+    // ★ Use icon.ico for system tray (same as app icon)
+    const iconPath = path.join(__dirname, '../../assets/icon.ico');
 
     try {
-      // Create tray icon (use empty image as fallback if icon file doesn't exist)
-      let icon;
-      try {
-        icon = nativeImage.createFromPath(iconPath);
-        if (icon.isEmpty()) {
-          throw new Error('Empty icon');
-        }
-      } catch (e) {
-        // Fallback: create a small empty icon
-        icon = nativeImage.createEmpty();
-        log.warn('Tray icon not found, using empty icon:', iconPath);
+      let icon = nativeImage.createFromPath(iconPath);
+      if (icon.isEmpty()) {
+        throw new Error('Empty icon');
       }
+      // Resize to 16x16 for tray (ico contains multiple sizes, pick small one)
+      icon = icon.resize({ width: 16, height: 16 });
 
       this.tray = new Tray(icon);
       this.tray.setToolTip('OptiBot ERP');

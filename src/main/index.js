@@ -5,7 +5,7 @@
  * initializes hardware services (electronic scale + label printer).
  */
 
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const path = require('path');
 const log = require('electron-log');
 const Store = require('electron-store');
@@ -328,6 +328,9 @@ function initServices() {
 app.whenReady().then(() => {
   log.info('OptiBot ERP Desktop starting...');
 
+  // ★ Remove all default menus (File, Edit, View, etc.)
+  Menu.setApplicationMenu(null);
+
   registerIPCHandlers();
   createMainWindow();
   initServices();
@@ -356,10 +359,10 @@ app.on('before-quit', () => {
   }
 });
 
+// ★ Do NOT quit when all windows are closed — keep running in system tray
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  // Intentionally empty: app stays alive in tray
+  // Only quits via tray menu "退出" or app.quit()
 });
 
 // Handle uncaught errors gracefully
