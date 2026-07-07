@@ -1,8 +1,10 @@
 name: Build Desktop Installer
 
 on:
-  # Trigger on version tags
+  # Trigger on push to main branch
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
