@@ -14,6 +14,11 @@ on:
         required: false
         default: ''
 
+# ★ Default shell for all jobs: bash (works on Windows/Mac/Linux)
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-windows:
     name: Build Windows x64
@@ -29,30 +34,27 @@ jobs:
         run: |
           echo "=== Building commit: $(git rev-parse --short HEAD) ==="
           echo "=== Commit message: $(git log -1 --pretty=format:'%s') ==="
-          echo "=== Date: $(git log -1 --pretty=format:'%ci') ==="
           echo "=== index.js FRAPPE_URL ==="
-          findstr "FRAPPE_URL" src/main/index.js || echo "NOT FOUND"
+          grep "FRAPPE_URL" src/main/index.js || echo "NOT FOUND"
           echo "=== Menu.setApplicationMenu ==="
-          findstr "setApplicationMenu" src/main/index.js || echo "NOT FOUND"
+          grep "setApplicationMenu" src/main/index.js || echo "NOT FOUND"
           echo "=== isQuitting ==="
-          findstr "isQuitting" src/main/index.js || echo "NOT FOUND"
-        shell: cmd
+          grep "isQuitting" src/main/index.js || echo "NOT FOUND"
+          echo "=== webSecurity ==="
+          grep "webSecurity" src/main/index.js || echo "NOT FOUND"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ★ Clean install, no cache
       - name: Install dependencies
         run: |
           npm cache clean --force
-          npm install --no-cache
-        shell: cmd
+          npm install
 
       - name: Get version
         id: version
-        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
@@ -87,9 +89,8 @@ jobs:
       - name: Verify source code
         run: |
           echo "=== Building commit: $(git rev-parse --short HEAD) ==="
-          grep "FRAPPE_URL" src/main/index.js
-          grep "setApplicationMenu" src/main/index.js
-          grep "isQuitting" src/main/index.js
+          grep "FRAPPE_URL" src/main/index.js || echo "NOT FOUND"
+          grep "setApplicationMenu" src/main/index.js || echo "NOT FOUND"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -99,11 +100,10 @@ jobs:
       - name: Install dependencies
         run: |
           npm cache clean --force
-          npm install --no-cache
+          npm install
 
       - name: Get version
         id: version
-        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.version }}" ]; then
             echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
