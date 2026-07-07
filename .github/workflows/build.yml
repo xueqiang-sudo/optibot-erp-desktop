@@ -1,4 +1,4 @@
-name: Build Windows Installer
+name: Build Desktop Installer
 
 on:
   # Trigger on version tags
@@ -43,27 +43,91 @@ jobs:
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build installer
+      - name: Build Windows installer
         run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload installer artifacts
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OptiBot-ERP-Setup-${{ steps.version.outputs.version }}
+          name: OptiBot-ERP-Windows-${{ steps.version.outputs.version }}
           path: |
             build/*.exe
             build/latest.yml
           retention-days: 30
 
+  build-mac:
+    name: Build macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build macOS installer
+        run: npx electron-builder --mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiBot-ERP-macOS-${{ steps.version.outputs.version }}
+          path: |
+            build/*.dmg
+            build/*.zip
+            build/latest-mac.yml
+          retention-days: 30
+
+  # Release: collect all platform artifacts
+  release:
+    name: Create Release
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: OptiBot-ERP-Windows-*
+          path: artifacts/
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: OptiBot-ERP-macOS-*
+          path: artifacts/
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/*.exe
-            build/latest.yml
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/**/latest*.yml
           draft: false
           prerelease: false
           generate_release_notes: true

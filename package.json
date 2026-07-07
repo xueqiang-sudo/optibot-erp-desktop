@@ -10,8 +10,8 @@
     "start": "electron .",
     "dev": "cross-env NODE_ENV=development electron .",
     "build": "electron-builder --win",
-    "build:dir": "electron-builder --win --dir",
-    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
+    "build:all": "electron-builder --win --mac",
     "rebuild": "npx @electron/rebuild -f -w serialport,usb",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -58,6 +58,25 @@
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.business",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "OptiBot ERP"
     },
     "extraResources": [
       {
