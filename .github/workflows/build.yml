@@ -28,14 +28,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm install
-        env:
-          # Ensure native modules compile for Electron
-          npm_config_runtime: electron
-          npm_config_target: 28.3.3
 
       - name: Get version
         id: version
@@ -53,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload installer artifact
+      - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
           name: OptiBot-ERP-Setup-${{ steps.version.outputs.version }}
@@ -74,41 +69,3 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Optional: also build Linux version
-  build-linux:
-    name: Build Linux x64
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # Uncomment to enable Linux builds
-    if: false
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev libusb-1.0-0-dev
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build Linux package
-        run: npx electron-builder --linux AppImage
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OptiBot-ERP-Linux
-          path: build/*.AppImage
-          retention-days: 30
