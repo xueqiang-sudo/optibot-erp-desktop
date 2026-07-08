@@ -79,14 +79,24 @@ function createMainWindow() {
     store.set('windowBounds', { width: bounds.width, height: bounds.height });
   });
 
-  // ★ Intercept close: minimize to tray instead of quitting
+  // ★ Intercept close: show confirmation dialog before quitting
   mainWindow.on('close', (event) => {
     if (!global.isQuitting) {
       event.preventDefault();
-      mainWindow.hide();
-      if (trayManager) {
-        trayManager.showBalloon();
-      }
+      dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'OptiBot ERP',
+        message: '确认退出',
+        detail: '是否退出程序？',
+        buttons: ['是', '否'],
+        defaultId: 0,
+        cancelId: 1,
+      }).then((result) => {
+        if (result.response === 0) {
+          global.isQuitting = true;
+          app.quit();
+        }
+      });
     }
   });
 
