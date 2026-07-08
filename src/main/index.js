@@ -39,6 +39,7 @@ let printerService = null;
 let fontPreloader = null;
 let trayManager = null;
 let updaterService = null;
+let quitDialog = null;
 
 // ─── Logging ─────────────────────────────────────────────────────
 log.transports.file.level = 'info';
@@ -79,23 +80,77 @@ function createMainWindow() {
     store.set('windowBounds', { width: bounds.width, height: bounds.height });
   });
 
-  // ★ Intercept close: show confirmation dialog before quitting
+  // ★ Intercept close: show custom confirmation dialog before quitting
   mainWindow.on('close', (event) => {
     if (!global.isQuitting) {
       event.preventDefault();
-      dialog.showMessageBox(mainWindow, {
-        type: 'question',
-        title: 'OptiBot ERP',
-        message: '确认退出',
-        detail: '是否退出程序？',
-        buttons: ['是', '否'],
-        defaultId: 0,
-        cancelId: 1,
-      }).then((result) => {
-        if (result.response === 0) {
-          global.isQuitting = true;
-          app.quit();
-        }
+
+      // Don't create multiple dialogs
+      if (quitDialog && !quitDialog.isDestroyed()) {
+        quitDialog.focus();
+        return;
+      }
+
+      const dialogHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>退出确认</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{display:flex;justify-content:center;align-items:center;height:100vh;
+background:#f5f5f5;font-family:"Microsoft YaHei","PingFang SC",sans-serif;
+-webkit-app-region:drag;user-select:none}
+.card{background:#fff;border-radius:10px;padding:36px 48px;
+box-shadow:0 4px 24px rgba(0,0,0,0.1);text-align:center;-webkit-app-region:no-drag}
+.msg{font-size:17px;color:#333;margin-bottom:28px}
+.btns{display:flex;gap:20px;justify-content:center}
+button{padding:9px 36px;font-size:15px;border-radius:6px;cursor:pointer;
+border:none;font-family:inherit;transition:background .2s}
+.yes{background:#1677ff;color:#fff}
+.yes:hover{background:#4096ff}
+.yes:active{background:#0958d9}
+.no{background:#fff;color:#333;border:1px solid #d9d9d9}
+.no:hover{color:#1677ff;border-color:#1677ff}
+.no:active{color:#0958d9;border-color:#0958d9}
+</style></head>
+<body>
+<div class="card">
+<p class="msg">是否退出程序？</p>
+<div class="btns">
+<button class="yes" id="y">是</button>
+<button class="no" id="n">否</button>
+</div>
+</div>
+<script>
+const{ipcRenderer}=require('electron');
+document.getElementById('y').onclick=()=>ipcRenderer.send('quit-dialog:response',true);
+document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response',false);
+</script>
+</body></html>`;
+
+      quitDialog = new BrowserWindow({
+        width: 320,
+        height: 180,
+        parent: mainWindow,
+        modal: true,
+        frame: false,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        autoHideMenuBar: true,
+        backgroundColor: '#f5f5f5',
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false,
+        },
+      });
+
+      const encodedHtml = Buffer.from(dialogHtml).toString('base64');
+      quitDialog.loadURL(`data:text/html;base64,${encodedHtml}`);
+
+      quitDialog.on('closed', () => {
+        quitDialog = null;
       });
     }
   });
@@ -112,42 +167,26 @@ function createMainWindow() {
     }
   });
 
-  // ★ Show debug dialog: confirm URL before loading
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'OptiBot ERP - 调试信息',
-    message: '即将加载以下页面：',
-    detail: `URL: ${FRAPPE_URL}\n\n版本: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nChrome: ${process.versions.chrome}\n平台: ${process.platform}\n\n点击"确定"继续加载，点击"取消"打开开发者工具。`,
-    buttons: ['确定 - 加载页面', '取消 - 打开调试工具'],
-    defaultId: 0,
-    cancelId: 1,
-  }).then((result) => {
-    if (result.response === 1) {
-      // User clicked cancel - open DevTools for debugging
-      mainWindow.webContents.openDevTools({ mode: 'detach' });
-    }
-
-    log.info(`Loading URL: ${FRAPPE_URL}`);
-    mainWindow.loadURL(FRAPPE_URL).then(() => {
-      log.info('Page loaded successfully');
-    }).catch((err) => {
-      log.error('Page load failed:', err.message);
-      // ★ Show error dialog
-      dialog.showMessageBox(mainWindow, {
-        type: 'error',
-        title: '页面加载失败',
-        message: '无法加载 ERP 页面',
-        detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
-        buttons: ['重试', '退出'],
-        defaultId: 0,
-      }).then((r) => {
-        if (r.response === 0) {
-          mainWindow.loadURL(FRAPPE_URL);
-        } else {
-          global.isQuitting = true;
-          app.quit();
-        }
-      });
+  // ★ Load URL directly (no debug dialog)
+  log.info(`Loading URL: ${FRAPPE_URL}`);
+  mainWindow.loadURL(FRAPPE_URL).then(() => {
+    log.info('Page loaded successfully');
+  }).catch((err) => {
+    log.error('Page load failed:', err.message);
+    dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: '页面加载失败',
+      message: '无法加载 ERP 页面',
+      detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
+      buttons: ['重试', '退出'],
+      defaultId: 0,
+    }).then((r) => {
+      if (r.response === 0) {
+        mainWindow.loadURL(FRAPPE_URL);
+      } else {
+        global.isQuitting = true;
+        app.quit();
+      }
     });
   });
 
@@ -270,6 +309,19 @@ function registerIPCHandlers() {
   ipcMain.handle('app:set-config', (_event, key, value) => {
     store.set(key, value);
     return { success: true };
+  });
+
+  // ★ Quit dialog response handler
+  ipcMain.on('quit-dialog:response', (_event, confirmed) => {
+    if (confirmed) {
+      global.isQuitting = true;
+      app.quit();
+    } else {
+      if (quitDialog && !quitDialog.isDestroyed()) {
+        quitDialog.destroy();
+      }
+      quitDialog = null;
+    }
   });
 }
 
