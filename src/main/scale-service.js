@@ -80,20 +80,32 @@ class ScaleService extends EventEmitter {
   /**
    * Connect to electronic scale on the specified serial port
    * @param {string} portPath - Serial port path (e.g., 'COM3')
+   * @param {Object} [options] - Serial port options (override defaults)
+   * @param {number} [options.baudRate=9600] - Baud rate
+   * @param {number} [options.dataBits=8] - Data bits (5, 6, 7, or 8)
+   * @param {string} [options.parity='none'] - Parity ('none', 'even', 'odd', 'mark', 'space')
+   * @param {number} [options.stopBits=1] - Stop bits (1 or 2)
    * @returns {Promise<void>}
    */
-  async connect(portPath) {
+  async connect(portPath, options = {}) {
     if (this.connected) {
       await this.disconnect();
     }
 
+    // Merge user options with defaults
+    const portOptions = {
+      ...DEFAULT_PORT_OPTIONS,
+      path: portPath,
+    };
+    if (options.baudRate !== undefined) portOptions.baudRate = options.baudRate;
+    if (options.dataBits !== undefined) portOptions.dataBits = options.dataBits;
+    if (options.parity !== undefined) portOptions.parity = options.parity;
+    if (options.stopBits !== undefined) portOptions.stopBits = options.stopBits;
+
     return new Promise((resolve, reject) => {
       this.portPath = portPath;
       this.port = new SerialPort(
-        {
-          ...DEFAULT_PORT_OPTIONS,
-          path: portPath,
-        },
+        portOptions,
         (err) => {
           if (err) {
             this._emitError(`Failed to create serial port: ${err.message}`);
@@ -119,7 +131,7 @@ class ScaleService extends EventEmitter {
         this.weightHistory = [];
         this.lastWeight = null;
 
-        log.info(`Scale connected on port: ${portPath}`);
+        log.info(`Scale connected on port: ${portPath}, baudRate: ${portOptions.baudRate}, dataBits: ${portOptions.dataBits}, parity: ${portOptions.parity}, stopBits: ${portOptions.stopBits}`);
         this.emit('status', { connected: true, port: portPath });
         resolve();
       });

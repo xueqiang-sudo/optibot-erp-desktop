@@ -99,9 +99,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /**
      * Connect to electronic scale on specified serial port
      * @param {string} port - Serial port path (e.g., 'COM3' on Windows)
+     * @param {Object} [options] - Serial port options (override defaults)
+     * @param {number} [options.baudRate=9600] - Baud rate (e.g., 9600, 19200, 38400, 115200)
+     * @param {number} [options.dataBits=8] - Data bits (5, 6, 7, or 8)
+     * @param {string} [options.parity='none'] - Parity ('none', 'even', 'odd', 'mark', 'space')
+     * @param {number} [options.stopBits=1] - Stop bits (1 or 2)
      * @returns {Promise<{success: boolean}>}
      */
-    connect: (port) => ipcRenderer.invoke('scale:connect', port),
+    connect: (port, options) => ipcRenderer.invoke('scale:connect', port, options),
 
     /**
      * Disconnect from electronic scale

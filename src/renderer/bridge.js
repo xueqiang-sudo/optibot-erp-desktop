@@ -51,7 +51,7 @@
       // Auto-connect scale if configured
       if (config.autoConnectScale && config.lastScalePort) {
         try {
-          await this.connectScale(config.lastScalePort);
+          await this.connectScale(config.lastScalePort, config.lastScaleOptions);
         } catch (err) {
           console.warn('[OptiBot Bridge] Auto-connect scale failed:', err);
         }
@@ -92,9 +92,14 @@
     /**
      * Connect to electronic scale
      * @param {string} port - Serial port path
+     * @param {Object} [options] - Serial port options
+     * @param {number} [options.baudRate=9600] - Baud rate
+     * @param {number} [options.dataBits=8] - Data bits
+     * @param {string} [options.parity='none'] - Parity
+     * @param {number} [options.stopBits=1] - Stop bits
      */
-    async connectScale(port) {
-      await window.electronAPI.scale.connect(port);
+    async connectScale(port, options) {
+      await window.electronAPI.scale.connect(port, options);
       this.scaleConnected = true;
     },
 

@@ -26,6 +26,7 @@ const store = new Store({
   defaults: {
     windowBounds: { width: 1400, height: 900 },
     lastScalePort: null,
+    lastScaleOptions: null,
     lastPrinterId: null,
     autoConnectScale: false,
     scaleAverageWindow: 5,
@@ -258,9 +259,12 @@ function registerIPCHandlers() {
     return await scaleService.listPorts();
   });
 
-  ipcMain.handle('scale:connect', async (_event, port) => {
-    await scaleService.connect(port);
+  ipcMain.handle('scale:connect', async (_event, port, options) => {
+    await scaleService.connect(port, options);
     store.set('lastScalePort', port);
+    if (options) {
+      store.set('lastScaleOptions', options);
+    }
     return { success: true };
   });
 
@@ -301,6 +305,7 @@ function registerIPCHandlers() {
   ipcMain.handle('app:get-config', () => {
     return {
       lastScalePort: store.get('lastScalePort'),
+      lastScaleOptions: store.get('lastScaleOptions'),
       lastPrinterId: store.get('lastPrinterId'),
       autoConnectScale: store.get('autoConnectScale'),
     };
@@ -378,11 +383,12 @@ function initServices() {
 
   // Auto-connect scale
   const lastPort = store.get('lastScalePort');
+  const lastScaleOptions = store.get('lastScaleOptions');
   const autoConnect = store.get('autoConnectScale');
   if (autoConnect && lastPort) {
     setTimeout(async () => {
       try {
-        await scaleService.connect(lastPort);
+        await scaleService.connect(lastPort, lastScaleOptions || {});
       } catch (err) {
         log.warn('Auto-connect scale failed:', err.message);
       }
