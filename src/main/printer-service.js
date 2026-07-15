@@ -60,7 +60,7 @@ class PrinterService extends EventEmitter {
 
   /**
    * List available USB printers
-   * @returns {Promise<Array<{id: string, name: string, vid: string, pid: string}>>}
+   * @returns {Promise<Array<{id: string, name: string, manufacturer: string, serialNumber: string, port: string, vid: string, pid: string}>>}
    */
   async listPrinters() {
     const printers = [];
@@ -70,7 +70,7 @@ class PrinterService extends EventEmitter {
 
       for (const device of devices) {
         if (this._isPrinterDevice(device)) {
-          const info = this._getDeviceInfo(device);
+          const info = await this._getDeviceInfo(device);
           printers.push(info);
           // Cache known printer
           this.knownPrinters.set(info.id, {
@@ -210,28 +210,63 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Get device information
+   * Get device information (reads USB descriptors for real name/port)
    * @param {usb.Device} device
-   * @returns {Object}
+   * @returns {Promise<Object>}
    * @private
    */
-  _getDeviceInfo(device) {
+  async _getDeviceInfo(device) {
     const desc = device.deviceDescriptor;
     const vid = desc.idVendor.toString(16).padStart(4, '0');
     const pid = desc.idProduct.toString(16).padStart(4, '0');
 
-    // Find printer name from known identifiers
-    let name = `USB Printer (${vid}:${pid})`;
-    for (const known of TSC_USB_IDENTIFIERS) {
-      if (desc.idVendor === known.vid && desc.idProduct === known.pid) {
-        name = known.name;
-        break;
+    let manufacturer = '';
+    let product = '';
+    let serialNumber = '';
+
+    // Read USB string descriptors for real device info
+    try {
+      device.open();
+      if (desc.iManufacturer) {
+        manufacturer = await device.getStringDescriptor(desc.iManufacturer);
       }
+      if (desc.iProduct) {
+        product = await device.getStringDescriptor(desc.iProduct);
+      }
+      if (desc.iSerialNumber) {
+        serialNumber = await device.getStringDescriptor(desc.iSerialNumber);
+      }
+      device.close();
+    } catch (err) {
+      // Device may be busy or permissions issue, use defaults
+      try { device.close(); } catch (e) { /* ignore */ }
+      log.warn(`Failed to read USB descriptors for ${vid}:${pid}:`, err.message);
+    }
+
+    // USB port path: busNumber + deviceAddress
+    const port = `USB Bus ${device.busNumber} Device ${device.deviceAddress}`;
+
+    // Build display name: prefer USB product string > known list > fallback
+    let name = product || '';
+    if (!name) {
+      for (const known of TSC_USB_IDENTIFIERS) {
+        if (desc.idVendor === known.vid && desc.idProduct === known.pid) {
+          name = known.name;
+          break;
+        }
+      }
+    }
+    if (!name) {
+      name = `USB Printer (${vid}:${pid})`;
     }
 
     return {
       id: `${vid}:${pid}`,
       name: name,
+      manufacturer: manufacturer,
+      product: product,
+      serialNumber: serialNumber,
+      port: port,
       vid: `0x${vid}`,
       pid: `0x${pid}`,
     };
@@ -366,7 +401,7 @@ class PrinterService extends EventEmitter {
    * @param {usb.Device} device
    * @private
    */
-  _onUSBAttach(device) {
+  async _onUSBAttach(device) {
     const desc = device.deviceDescriptor;
     if (!desc) return;
 
@@ -376,8 +411,8 @@ class PrinterService extends EventEmitter {
     );
 
     if (isKnown || desc.bDeviceClass === USB_CLASS_PRINTER) {
-      const info = this._getDeviceInfo(device);
-      log.info(`USB printer attached: ${info.name} (${info.id})`);
+      const info = await this._getDeviceInfo(device);
+      log.info(`USB printer attached: ${info.name} (${info.id}) [${info.port}]`);
       this.knownPrinters.set(info.id, {
         vid: info.vid,
         pid: info.pid,
