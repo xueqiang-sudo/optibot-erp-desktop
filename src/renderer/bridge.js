@@ -41,6 +41,9 @@
     // Printer list
     printers: [],
 
+    // Currently selected default printer (set via setPrinter)
+    currentPrinter: null,
+
     /**
      * Initialize the bridge: connect scale, discover printers
      */
@@ -59,7 +62,7 @@
 
       // Discover printers
       try {
-        this.printers = await window.electronAPI.printer.listPrinters();
+        await this.listPrinters();
         console.log(
           '[OptiBot Bridge] Printers found:',
           this.printers.length
@@ -119,20 +122,95 @@
       return this.currentWeight ? this.currentWeight.value : null;
     },
 
+    // ─── Printer Management ─────────────────────────────────────
+
     /**
-     * Print a label with Chinese text support
+     * List all available USB printers and refresh the internal list.
+     * If a default printer was previously set and is still online, it is kept.
+     * @returns {Promise<Array<{id: string, name: string, manufacturer: string, product: string, serialNumber: string, port: string, vid: string, pid: string}>>}
+     */
+    async listPrinters() {
+      this.printers = await window.electronAPI.printer.listPrinters();
+
+      // Keep current printer selection if it is still available
+      if (this.currentPrinter) {
+        const stillHere = this.printers.find(
+          (p) => p.id === this.currentPrinter.id
+        );
+        if (stillHere) {
+          this.currentPrinter = stillHere; // update to latest info
+        } else {
+          this.currentPrinter = null; // printer went offline
+          console.warn(
+            '[OptiBot Bridge] Selected printer no longer available'
+          );
+        }
+      }
+
+      return this.printers;
+    },
+
+    /**
+     * Set the default printer for subsequent printLabel() calls.
+     * @param {string} printerId - Printer ID from listPrinters() (e.g. "1fc9:2016")
+     * @returns {Object} The selected printer info
+     * @throws {Error} If the printerId is not found in the current list
+     */
+    async setPrinter(printerId) {
+      // Refresh list if empty
+      if (this.printers.length === 0) {
+        await this.listPrinters();
+      }
+
+      const printer = this.printers.find((p) => p.id === printerId);
+      if (!printer) {
+        const available = this.printers.map((p) => p.id).join(', ');
+        throw new Error(
+          `Printer "${printerId}" not found. Available: ${available || 'none'}`
+        );
+      }
+
+      this.currentPrinter = printer;
+      console.log(
+        `[OptiBot Bridge] Default printer set: ${printer.name} (${printer.id})`
+      );
+      return printer;
+    },
+
+    /**
+     * Get the currently selected default printer.
+     * @returns {Object|null} Printer info or null if not set
+     */
+    getPrinter() {
+      return this.currentPrinter;
+    },
+
+    /**
+     * Print a label with Chinese text support.
+     * Uses the previously set default printer (via setPrinter).
+     * Falls back to the first available printer if none was set.
      *
      * @param {string} zplData - ZPL string (use ^ACN for Chinese, ^A0N for English)
-     * @param {string} [printerId] - Printer ID (defaults to first available)
      * @returns {Promise<{success: boolean}>}
+     * @throws {Error} If no printer is available
      */
-    async printLabel(zplData, printerId) {
-      if (!printerId && this.printers.length > 0) {
-        printerId = this.printers[0].id;
+    async printLabel(zplData) {
+      let printerId = this.currentPrinter ? this.currentPrinter.id : null;
+
+      // Fallback: pick first available printer
+      if (!printerId) {
+        if (this.printers.length === 0) {
+          await this.listPrinters();
+        }
+        if (this.printers.length > 0) {
+          printerId = this.printers[0].id;
+        }
       }
+
       if (!printerId) {
         throw new Error('No printer available');
       }
+
       return await window.electronAPI.printer.printZPL(printerId, zplData);
     },
 

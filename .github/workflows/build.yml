@@ -168,15 +168,30 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.zip
             artifacts/**/latest*.yml
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+          draft: "false"
+          prerelease: "false"
+          generate_release_notes: "true"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 检查 Dev Build tag 是否已存在（避免同一 commit 重复触发时失败）
+      - name: Check if dev tag exists
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        id: check_tag
+        run: |
+          TAG="dev-${{ github.sha }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists, skipping release"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Push main / 手动触发：Dev Build Release（带 commit hash 避免冲突）
       - name: Create Dev Build Release
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && steps.check_tag.outputs.exists == 'false' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev-${{ github.sha }}
@@ -190,8 +205,8 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.zip
             artifacts/**/latest*.yml
-          draft: false
-          prerelease: true
-          make_latest: false
+          draft: "false"
+          prerelease: "true"
+          make_latest: "false"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
