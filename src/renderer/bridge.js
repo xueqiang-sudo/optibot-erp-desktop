@@ -219,10 +219,22 @@
       }
 
       if (!printerId) {
+        this._showPrintResultDialog(false, '没有可用的打印机', null, zplData);
         throw new Error('No printer available');
       }
 
-      return await window.electronAPI.printer.printZPL(printerId, zplData);
+      const printer = this.printers.find((p) => p.id === printerId);
+      try {
+        const result = await window.electronAPI.printer.printZPL(
+          printerId,
+          zplData
+        );
+        this._showPrintResultDialog(true, null, printer, zplData);
+        return result;
+      } catch (err) {
+        this._showPrintResultDialog(false, err.message, printer, zplData);
+        throw err;
+      }
     },
 
     /**
@@ -355,6 +367,129 @@
           statusEl.style.background = '#ccc';
           if (valueEl) valueEl.textContent = '-- kg';
         }
+      }
+    },
+
+    /**
+     * Show print result dialog (success or failure)
+     * @param {boolean} success
+     * @param {string|null} errorMsg
+     * @param {Object|null} printer - Printer info
+     * @param {string} zplData - The ZPL that was sent
+     * @private
+     */
+    _showPrintResultDialog(success, errorMsg, printer, zplData) {
+      const existing = document.getElementById('optibot-print-result-dialog');
+      if (existing) existing.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'optibot-print-result-dialog';
+      overlay.style.cssText =
+        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+
+      const icon = success ? '✅' : '❌';
+      const title = success ? '打印成功' : '打印失败';
+      const titleBg = success
+        ? 'linear-gradient(135deg,#43a047,#2e7d32)'
+        : 'linear-gradient(135deg,#e53935,#c62828)';
+
+      const printerInfo = printer
+        ? `<div style="margin:8px 0;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;">
+            <div><b>打印机：</b>${printer.name || '-'}</div>
+            <div><b>ID：</b><span style="font-family:monospace;color:#1a73e8;">${printer.id}</span></div>
+            <div><b>端口：</b>${printer.port || '-'}</div>
+           </div>`
+        : '<div style="color:#999;margin:8px 0;">无打印机信息</div>';
+
+      const errorInfo = errorMsg
+        ? `<div style="margin:8px 0;padding:10px;background:#ffebee;border-radius:6px;color:#c62828;font-size:13px;">
+            <b>错误：</b>${errorMsg}
+           </div>`
+        : '';
+
+      // ZPL preview (truncated)
+      const zplPreview =
+        zplData && zplData.length > 0
+          ? `<details style="margin:8px 0;">
+              <summary style="cursor:pointer;font-size:13px;color:#666;">📄 ZPL 指令 (${zplData.length} 字符)</summary>
+              <pre style="margin:8px 0;padding:10px;background:#263238;color:#e0e0e0;border-radius:6px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${zplData.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+             </details>`
+          : '';
+
+      overlay.innerHTML = `
+        <div style="
+          background:#fff;
+          border-radius:12px;
+          padding:0;
+          min-width:420px;
+          max-width:550px;
+          box-shadow:0 8px 32px rgba(0,0,0,0.3);
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+          overflow:hidden;
+        ">
+          <div style="
+            background:${titleBg};
+            color:#fff;
+            padding:16px 24px;
+            font-size:18px;
+            font-weight:bold;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+          ">
+            <span>${icon} ${title}</span>
+            <button id="optibot-print-result-close" style="
+              background:rgba(255,255,255,0.2);
+              border:none;
+              color:#fff;
+              width:32px;
+              height:32px;
+              border-radius:50%;
+              font-size:18px;
+              cursor:pointer;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+            ">✕</button>
+          </div>
+          <div style="padding:16px 24px;max-height:450px;overflow-y:auto;">
+            ${printerInfo}
+            ${errorInfo}
+            ${zplPreview}
+          </div>
+          <div style="
+            padding:12px 24px;
+            background:#f5f5f5;
+            text-align:right;
+            border-top:1px solid #eee;
+          ">
+            <button id="optibot-print-result-ok" style="
+              background:#1a73e8;
+              color:#fff;
+              border:none;
+              padding:8px 24px;
+              border-radius:6px;
+              font-size:14px;
+              cursor:pointer;
+            ">确定</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      const closeDialog = () => overlay.remove();
+      document.getElementById('optibot-print-result-close').onclick =
+        closeDialog;
+      document.getElementById('optibot-print-result-ok').onclick =
+        closeDialog;
+      overlay.onclick = (e) => {
+        if (e.target === overlay) closeDialog();
+      };
+
+      // Auto-close success after 3 seconds
+      if (success) {
+        setTimeout(closeDialog, 3000);
       }
     },
 

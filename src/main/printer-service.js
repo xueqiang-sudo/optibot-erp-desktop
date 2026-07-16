@@ -15,11 +15,9 @@ const usb = require('usb');
 const log = require('electron-log');
 
 // Known TSC printer USB Vendor/Product IDs
-// These may need to be updated based on actual device enumeration
-// TSC Auto ID Technology Co., Ltd typical VID: 0x1FC9 or similar
+// TSC Auto ID Technology Co., Ltd VID: 0x1203
 const TSC_USB_IDENTIFIERS = [
-  // Add known VID/PID pairs here
-  // { vid: 0x1FC9, pid: 0x2016, name: 'TSC TE344' },
+  { vid: 0x1203, pid: 0x0272, name: 'TSC TE344' },
 ];
 
 // USB device class for printers
