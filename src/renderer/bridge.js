@@ -487,18 +487,59 @@
      */
     async printFromJSON(json) {
       try {
-        // If json is a string, parse it
+        console.log('[OptiBot Bridge] printFromJSON input type:', typeof json,
+          'constructor:', json ? json.constructor.name : 'null');
+
+        // Step 1: If json is a string, parse it
         if (typeof json === 'string') {
-          console.log('[OptiBot Bridge] printFromJSON received string, parsing...');
+          console.log('[OptiBot Bridge] Step 1: Parsing outer string...');
           json = JSON.parse(json);
         }
 
-        // Validate
+        // Step 2: Unwrap common Frappe response wrappers
+        if (json && typeof json === 'object') {
+          if (json.data && typeof json.data === 'string') {
+            json = JSON.parse(json.data);
+          } else if (json.data && typeof json.data === 'object' && json.data.elements) {
+            json = json.data;
+          } else if (json.message && typeof json.message === 'string') {
+            json = JSON.parse(json.message);
+          } else if (json.message && typeof json.message === 'object' && json.message.elements) {
+            json = json.message;
+          }
+        }
+
+        // Step 3: If elements is a string (double-serialized), parse it
+        if (json && typeof json.elements === 'string') {
+          console.log('[OptiBot Bridge] Step 3: elements is string, parsing...');
+          json.elements = JSON.parse(json.elements);
+        }
+
+        // Step 4: Deep-parse any remaining stringified sub-fields
+        if (json && Array.isArray(json.elements)) {
+          json.elements = json.elements.map((el) => {
+            if (typeof el === 'string') return JSON.parse(el);
+            // Parse stringified cell_overrides
+            if (el.cell_overrides && typeof el.cell_overrides === 'string') {
+              el.cell_overrides = JSON.parse(el.cell_overrides);
+            }
+            // Parse stringified columns
+            if (el.columns && typeof el.columns === 'string') {
+              el.columns = JSON.parse(el.columns);
+            }
+            return el;
+          });
+        }
+
+        // Final validation
         if (!json || typeof json !== 'object') {
-          throw new Error('Invalid JSON: must be an object');
+          throw new Error('Invalid input: expected JSON object');
         }
         if (!Array.isArray(json.elements)) {
-          throw new Error('Invalid JSON: elements must be an array');
+          console.error('[OptiBot Bridge] Dump - keys:', Object.keys(json));
+          console.error('[OptiBot Bridge] Dump - elements type:', typeof json.elements,
+            'value:', String(json.elements).substring(0, 100));
+          throw new Error('elements must be an array, got: ' + typeof json.elements);
         }
 
         console.log(
