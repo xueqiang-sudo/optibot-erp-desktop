@@ -249,17 +249,29 @@
     },
 
     /**
-     * Create a ZPL label template with Chinese text support
+     * Create a ZPL label from a JSON description.
+     *
+     * Supported element types:
+     *  - text:    { type:'text', x, y, content, fontSize, fontWidth, chinese, bold, rotation }
+     *  - barcode: { type:'barcode', x, y, content, barcodeType, height, size }
+     *  - qrcode:  { type:'qrcode', x, y, content, size, gs1 }
+     *  - line:    { type:'line', x, y, width, thickness }
+     *  - date:    { type:'date', x, y, content, font_size, chinese, bold, rotation }
+     *  - table:   { type:'table', x, y, columns, cell_overrides, max_rows, row_height,
+     *               border, border_thickness, header_font_size, cell_font_size,
+     *               chinese, show_header }
      *
      * @param {Object} options
      * @param {number} options.width - Label width in mm
      * @param {number} options.height - Label height in mm
      * @param {number} [options.dpi=203] - Printer DPI
+     * @param {number} [options.copies=1] - Number of copies
      * @param {Array} options.elements - Label elements
+     * @param {Array} [options.variables] - Variable definitions for placeholder substitution
      * @returns {string} Complete ZPL string
      */
     buildZPL(options) {
-      const { width, height, dpi = 203, elements } = options;
+      const { width, height, dpi = 203, copies = 1, elements } = options;
       const dotsPerMM = dpi / 25.4;
       const widthDots = Math.round(width * dotsPerMM);
       const heightDots = Math.round(height * dotsPerMM);
@@ -269,33 +281,211 @@
       zpl += `^LL${heightDots}\n`;
 
       for (const el of elements) {
-        const x = Math.round(el.x * dotsPerMM);
-        const y = Math.round(el.y * dotsPerMM);
+        const x = Math.round((el.x || 0) * dotsPerMM);
+        const y = Math.round((el.y || 0) * dotsPerMM);
 
-        if (el.type === 'text') {
-          const h = el.fontSize || 24;
-          const w = el.fontWidth || h;
+        switch (el.type) {
+          case 'text':
+            zpl += this._zplText(el, x, y);
+            break;
 
-          if (el.chinese) {
-            // Chinese text: use font code C
-            zpl += `^FO${x},${y}^ACN,${h},${w}^FD${el.content}^FS\n`;
-          } else {
-            // English text: use built-in font A0
-            zpl += `^FO${x},${y}^A0N,${h},${w}^FD${el.content}^FS\n`;
+          case 'date':
+            zpl += this._zplText(
+              {
+                content: el.content,
+                fontSize: el.font_size || 20,
+                fontWidth: el.font_width,
+                chinese: el.chinese,
+                bold: el.bold,
+                rotation: el.rotation,
+              },
+              x,
+              y
+            );
+            break;
+
+          case 'barcode':
+            if (el.barcodeType === 'QR') {
+              const size = el.size || 4;
+              zpl += `^FO${x},${y}^BQN,2,${size}^FD${el.content || ''}^FS\n`;
+            } else {
+              const h = el.height || 60;
+              zpl += `^FO${x},${y}^BCN,${h},Y,N,N^FD${el.content || ''}^FS\n`;
+            }
+            break;
+
+          case 'qrcode': {
+            const size = el.size || 4;
+            let content = el.content || '';
+            // GS1 QR code: prepend FNC1 (^FD>8)
+            if (el.gs1) {
+              content = '>8' + content;
+            }
+            zpl += `^FO${x},${y}^BQN,2,${size}^FD${content}^FS\n`;
+            break;
           }
-        } else if (el.type === 'barcode') {
-          const h = el.height || 60;
-          if (el.barcodeType === 'QR') {
-            zpl += `^FO${x},${y}^BQN,2,4^FD${el.content}^FS\n`;
-          } else {
-            // Default to Code128
-            zpl += `^FO${x},${y}^BCN,${h},Y,N,N^FD${el.content}^FS\n`;
+
+          case 'line': {
+            const lineW = Math.round((el.width || 50) * dotsPerMM);
+            const thickness = el.thickness || 2;
+            zpl += `^FO${x},${y}^GB${lineW},${thickness},${thickness},B^FS\n`;
+            break;
           }
+
+          case 'table':
+            zpl += this._zplTable(el, x, y, dotsPerMM);
+            break;
+
+          default:
+            console.warn(`[OptiBot Bridge] Unknown element type: ${el.type}`);
         }
+      }
+
+      if (copies > 1) {
+        zpl += `^PQ${copies}\n`;
       }
 
       zpl += '^XZ';
       return zpl;
+    },
+
+    /**
+     * Generate ZPL for a text element
+     * @private
+     */
+    _zplText(el, x, y) {
+      const h = el.fontSize || 24;
+      const w = el.fontWidth || h;
+      const content = el.content || '';
+
+      // Rotation: 0=N, 1=R(90°), 2=I(180°), 3=B(270°)
+      const rotMap = { 0: 'N', 90: 'R', 180: 'I', 270: 'B' };
+      const rot = rotMap[el.rotation] || 'N';
+
+      if (el.chinese) {
+        return `^FO${x},${y}^AC${rot},${h},${w}^FD${content}^FS\n`;
+      } else {
+        return `^FO${x},${y}^A0${rot},${h},${w}^FD${content}^FS\n`;
+      }
+    },
+
+    /**
+     * Generate ZPL for a table element.
+     * Renders cell text and optional border grid lines.
+     *
+     * @private
+     */
+    _zplTable(el, tableX, tableY, dotsPerMM) {
+      let zpl = '';
+      const columns = el.columns || [];
+      const cellOverrides = el.cell_overrides || {};
+      const maxRows = el.max_rows || 6;
+      const rowHeightMM = el.row_height || 6;
+      const rowHeightDots = Math.round(rowHeightMM * dotsPerMM);
+      const border = el.border !== false;
+      const borderThickness = el.border_thickness || 2;
+      const cellFontSize = el.cell_font_size || 16;
+      const headerFontSize = el.header_font_size || 20;
+      const chinese = el.chinese !== false;
+      const showHeader = el.show_header !== false;
+      const fontChar = chinese ? 'C' : '0';
+
+      // Calculate column widths in dots
+      const colWidthsDots = columns.map((col) =>
+        Math.round((col.width || 20) * dotsPerMM)
+      );
+      const totalTableWidthDots = colWidthsDots.reduce((s, w) => s + w, 0);
+      const totalTableHeightDots = rowHeightDots * maxRows;
+
+      // ── Draw border grid ──
+      if (border) {
+        // Outer border
+        zpl += `^FO${tableX},${tableY}^GB${totalTableWidthDots},${totalTableHeightDots},${borderThickness},B^FS\n`;
+
+        // Horizontal lines between rows
+        for (let r = 1; r < maxRows; r++) {
+          const ly = tableY + r * rowHeightDots;
+          zpl += `^FO${tableX},${ly}^GB${totalTableWidthDots},${borderThickness},${borderThickness},B^FS\n`;
+        }
+
+        // Vertical lines between columns
+        let cx = tableX;
+        for (let c = 1; c < columns.length; c++) {
+          cx += colWidthsDots[c - 1];
+          zpl += `^FO${cx},${tableY}^GB${borderThickness},${totalTableHeightDots},${borderThickness},B^FS\n`;
+        }
+      }
+
+      // ── Draw header row (if enabled) ──
+      if (showHeader) {
+        let hx = tableX;
+        for (let c = 0; c < columns.length; c++) {
+          if (columns[c].header) {
+            const textX = hx + 2;
+            const textY = tableY + 2;
+            const align = columns[c].align || 'left';
+            const offsetX =
+              align === 'center'
+                ? Math.max(0, Math.round((colWidthsDots[c] - headerFontSize * columns[c].header.length * 0.6) / 2))
+                : align === 'right'
+                  ? Math.max(0, colWidthsDots[c] - headerFontSize * columns[c].header.length - 4)
+                  : 0;
+            zpl += `^FO${textX + offsetX},${textY}^A${fontChar}N,${headerFontSize},${headerFontSize}^FD${columns[c].header}^FS\n`;
+          }
+          hx += colWidthsDots[c];
+        }
+      }
+
+      // ── Draw cell content ──
+      for (let r = 0; r < maxRows; r++) {
+        const cellY = tableY + r * rowHeightDots;
+        // Vertical centering: offset text by (rowHeight - fontSize) / 2
+        const textOffsetY = Math.max(1, Math.round((rowHeightDots - cellFontSize) / 2));
+
+        let cellX = tableX;
+        for (let c = 0; c < columns.length; c++) {
+          const key = `${r},${c}`;
+          const override = cellOverrides[key];
+          const content = override ? override.content || '' : '';
+
+          if (content) {
+            const align = columns[c].align || 'left';
+            // Estimate text width: each char ≈ fontSize * 0.6 dots (rough)
+            const charWidth = cellFontSize * 0.6;
+            const textWidthDots = content.length * charWidth;
+            const cellW = colWidthsDots[c];
+
+            let offsetX;
+            if (align === 'center') {
+              offsetX = Math.max(2, Math.round((cellW - textWidthDots) / 2));
+            } else if (align === 'right') {
+              offsetX = Math.max(2, cellW - textWidthDots - 4);
+            } else {
+              offsetX = 2;
+            }
+
+            zpl += `^FO${cellX + offsetX},${cellY + textOffsetY}^A${fontChar}N,${cellFontSize},${cellFontSize}^FD${content}^FS\n`;
+          }
+
+          cellX += colWidthsDots[c];
+        }
+      }
+
+      return zpl;
+    },
+
+    /**
+     * Print a label from a JSON description.
+     * Converts JSON → ZPL → sends to printer.
+     *
+     * @param {Object} json - Label definition (see buildZPL for schema)
+     * @returns {Promise<{success: boolean}>}
+     * @throws {Error} If no printer available or print fails
+     */
+    async printFromJSON(json) {
+      const zplData = this.buildZPL(json);
+      console.log('[OptiBot Bridge] Generated ZPL:\n', zplData);
+      return await this.printLabel(zplData);
     },
 
     // ─── Weight Widget ───────────────────────────────────────────

@@ -168,50 +168,105 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
     }
   });
 
-  // ★ Load URL directly (no debug dialog)
   // ★ Fix nginx virtual host issue: ensure correct Host header
+  // ★ Register hook BEFORE loading URL — intercept ALL requests and filter manually
   const { session } = require('electron');
   const targetUrl = new URL(FRAPPE_URL);
 
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: [`${targetUrl.origin}/*`] },
     (details, callback) => {
-      // Force Host header to match what nginx expects
-      details.requestHeaders['Host'] = targetUrl.host;
-      // Use Chrome-like User-Agent to avoid server-side blocking
-      details.requestHeaders['User-Agent'] = details.requestHeaders['User-Agent'].replace(
-        /Electron\/[\d.]+/,
-        'Chrome/120.0.0.0'
-      );
+      // Only modify requests to our target origin
+      try {
+        const reqUrl = new URL(details.url);
+        if (reqUrl.hostname === targetUrl.hostname && reqUrl.port === targetUrl.port) {
+          details.requestHeaders['Host'] = targetUrl.host;
+          details.requestHeaders['User-Agent'] = details.requestHeaders['User-Agent'].replace(
+            /Electron\/[\d.]+/,
+            'Chrome/120.0.0.0'
+          );
+        }
+      } catch (e) {
+        // ignore URL parse errors
+      }
       callback({ requestHeaders: details.requestHeaders });
     }
   );
 
-  log.info(`Loading URL: ${FRAPPE_URL}`);
-  mainWindow.loadURL(FRAPPE_URL).then(() => {
-    log.info('Page loaded successfully');
-  }).catch((err) => {
-    log.error('Page load failed:', err.message);
-    dialog.showMessageBox(mainWindow, {
-      type: 'error',
-      title: '页面加载失败',
-      message: '无法加载 ERP 页面',
-      detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
-      buttons: ['重试', '退出'],
-      defaultId: 0,
-    }).then((r) => {
-      if (r.response === 0) {
-        mainWindow.loadURL(FRAPPE_URL);
+  // ★ Show loading page first, then navigate to Frappe URL after a short delay
+  // This ensures the onBeforeSendHeaders hook is fully registered before the main request
+  const loadingHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8"><title>OptiBot ERP</title>
+    <style>
+      body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;
+        background:#f0f2f5;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}
+      .wrap{text-align:center}
+      .spinner{width:48px;height:48px;border:4px solid #e0e0e0;border-top:4px solid #1677ff;
+        border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px}
+      @keyframes spin{to{transform:rotate(360deg)}}
+      .title{font-size:22px;color:#333;font-weight:bold;margin-bottom:8px}
+      .sub{font-size:14px;color:#999}
+    </style></head>
+    <body><div class="wrap">
+      <div class="spinner"></div>
+      <div class="title">OptiBot ERP</div>
+      <div class="sub">正在连接服务器...</div>
+    </div></body></html>
+  `)}`;
+
+  mainWindow.loadURL(loadingHtml);
+
+  // Navigate to actual URL after hook has time to register
+  let loadAttempts = 0;
+  const MAX_LOAD_ATTEMPTS = 3;
+
+  function loadFrappeUrl() {
+    loadAttempts++;
+    log.info(`Loading URL (attempt ${loadAttempts}): ${FRAPPE_URL}`);
+
+    mainWindow.loadURL(FRAPPE_URL, {
+      extraHeaders: `Host: ${targetUrl.host}\r\n`,
+    }).then(() => {
+      log.info('Page loaded successfully');
+    }).catch((err) => {
+      log.error('Page load failed:', err.message);
+      if (loadAttempts < MAX_LOAD_ATTEMPTS) {
+        log.info(`Retrying in 2 seconds...`);
+        setTimeout(loadFrappeUrl, 2000);
       } else {
-        global.isQuitting = true;
-        app.quit();
+        dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          title: '页面加载失败',
+          message: '无法加载 ERP 页面',
+          detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
+          buttons: ['重试', '退出'],
+          defaultId: 0,
+        }).then((r) => {
+          if (r.response === 0) {
+            loadAttempts = 0;
+            loadFrappeUrl();
+          } else {
+            global.isQuitting = true;
+            app.quit();
+          }
+        });
       }
     });
-  });
+  }
+
+  // Delay to ensure hook is ready, then load
+  setTimeout(loadFrappeUrl, 500);
 
   // ★ Page load failure handler
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
     log.error(`Page load failed: ${errorCode} - ${errorDescription} (${validatedURL})`);
+
+    // Auto-retry on failure
+    if (loadAttempts < MAX_LOAD_ATTEMPTS) {
+      log.info(`Auto-retrying in 2 seconds (attempt ${loadAttempts}/${MAX_LOAD_ATTEMPTS})...`);
+      setTimeout(loadFrappeUrl, 2000);
+      return;
+    }
 
     dialog.showMessageBox(mainWindow, {
       type: 'error',
@@ -222,10 +277,12 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
       defaultId: 0,
     }).then((r) => {
       if (r.response === 0) {
-        mainWindow.loadURL(FRAPPE_URL);
+        loadAttempts = 0;
+        loadFrappeUrl();
       } else if (r.response === 1) {
         mainWindow.webContents.openDevTools({ mode: 'detach' });
-        mainWindow.loadURL(FRAPPE_URL);
+        loadAttempts = 0;
+        loadFrappeUrl();
       } else {
         global.isQuitting = true;
         app.quit();
@@ -234,7 +291,22 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
   });
 
   // Inject bridge script after page loads
-  mainWindow.webContents.on('did-finish-load', () => {
+  mainWindow.webContents.on('did-finish-load', async () => {
+    const title = mainWindow.getTitle();
+    log.info(`Page finished loading, title: "${title}"`);
+
+    // ★ Detect nginx welcome page and auto-retry
+    const isNginxWelcome =
+      title.toLowerCase().includes('welcome to nginx') ||
+      title.toLowerCase().includes('test nginx') ||
+      title === 'Welcome to nginx!';
+
+    if (isNginxWelcome && loadAttempts < MAX_LOAD_ATTEMPTS) {
+      log.warn(`Detected nginx welcome page (attempt ${loadAttempts}), retrying in 2s...`);
+      setTimeout(loadFrappeUrl, 2000);
+      return;
+    }
+
     log.info('Frappe page loaded successfully');
     _injectBridge();
   });
