@@ -224,9 +224,7 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
     loadAttempts++;
     log.info(`Loading URL (attempt ${loadAttempts}): ${FRAPPE_URL}`);
 
-    mainWindow.loadURL(FRAPPE_URL, {
-      extraHeaders: `Host: ${targetUrl.host}\r\n`,
-    }).then(() => {
+    mainWindow.loadURL(FRAPPE_URL).then(() => {
       log.info('Page loaded successfully');
     }).catch((err) => {
       log.error('Page load failed:', err.message);
