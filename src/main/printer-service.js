@@ -173,9 +173,12 @@ class PrinterService extends EventEmitter {
         return true;
       }
 
-      // Also check interface classes (some printers report class at interface level)
-      // We need to open the device to read config descriptors
-      // This is done lazily to avoid issues
+      // Many printers report printer class at interface level, not device level.
+      // Fall back to checking interface descriptors.
+      if (this._hasPrinterInterface(device)) {
+        return true;
+      }
+
       return false;
     } catch (err) {
       return false;
