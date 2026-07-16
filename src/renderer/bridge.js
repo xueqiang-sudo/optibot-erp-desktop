@@ -224,11 +224,22 @@
       }
 
       const printer = this.printers.find((p) => p.id === printerId);
+
+      // Show "printing..." dialog immediately
+      this._showPrintProgressDialog(printer, zplData);
+
+      // Add timeout: 10 seconds max
+      const timeoutMs = 10000;
       try {
-        const result = await window.electronAPI.printer.printZPL(
-          printerId,
-          zplData
-        );
+        const result = await Promise.race([
+          window.electronAPI.printer.printZPL(printerId, zplData),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`打印超时 (${timeoutMs / 1000}秒无响应)`)),
+              timeoutMs
+            )
+          ),
+        ]);
         this._showPrintResultDialog(true, null, printer, zplData);
         return result;
       } catch (err) {
@@ -368,6 +379,70 @@
           if (valueEl) valueEl.textContent = '-- kg';
         }
       }
+    },
+
+    /**
+     * Show "printing in progress" dialog
+     * @param {Object|null} printer
+     * @param {string} zplData
+     * @private
+     */
+    _showPrintProgressDialog(printer, zplData) {
+      const existing = document.getElementById('optibot-print-result-dialog');
+      if (existing) existing.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'optibot-print-result-dialog';
+      overlay.style.cssText =
+        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+
+      const printerName = printer ? `${printer.name} (${printer.id})` : '未知';
+
+      overlay.innerHTML = `
+        <div style="
+          background:#fff;
+          border-radius:12px;
+          padding:0;
+          min-width:380px;
+          box-shadow:0 8px 32px rgba(0,0,0,0.3);
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+          overflow:hidden;
+        ">
+          <div style="
+            background:linear-gradient(135deg,#ff9800,#f57c00);
+            color:#fff;
+            padding:16px 24px;
+            font-size:18px;
+            font-weight:bold;
+          ">
+            ⏳ 正在打印...
+          </div>
+          <div style="padding:20px 24px;text-align:center;">
+            <div style="margin-bottom:12px;font-size:14px;color:#333;">
+              正在发送 ZPL 指令到打印机
+            </div>
+            <div style="font-size:13px;color:#666;margin-bottom:16px;">
+              ${printerName}
+            </div>
+            <div style="
+              display:inline-block;
+              width:40px;height:40px;
+              border:4px solid #e0e0e0;
+              border-top:4px solid #ff9800;
+              border-radius:50%;
+              animation:optibot-spin 1s linear infinite;
+            "></div>
+            <style>
+              @keyframes optibot-spin { to { transform: rotate(360deg); } }
+            </style>
+            <div style="margin-top:12px;font-size:12px;color:#999;">
+              ZPL 数据: ${zplData ? zplData.length : 0} 字符
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
     },
 
     /**

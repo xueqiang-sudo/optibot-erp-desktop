@@ -119,11 +119,21 @@ class PrinterService extends EventEmitter {
     // Auto-preload font if not loaded
     if (this.fontPreloader && !this.fontPreloader.isFontLoaded(printerId)) {
       log.info(`Font not loaded for ${printerId}, preloading...`);
-      await this.fontPreloader.preloadFont(printerId);
+      try {
+        await this.fontPreloader.preloadFont(printerId);
+      } catch (fontErr) {
+        log.warn(`Font preload failed for ${printerId}: ${fontErr.message}, continuing with print...`);
+      }
     }
 
-    // Send the ZPL data
-    await this.sendRaw(printerId, zplData);
+    // Send the ZPL data with timeout (8 seconds)
+    const timeoutMs = 8000;
+    await Promise.race([
+      this.sendRaw(printerId, zplData),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`USB写入超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
+      ),
+    ]);
     return { success: true };
   }
 
@@ -350,9 +360,30 @@ class PrinterService extends EventEmitter {
    */
   _writeToDevice(device, data) {
     return new Promise((resolve, reject) => {
+      const desc = device.deviceDescriptor;
+      const vid = desc
+        ? desc.idVendor.toString(16).padStart(4, '0')
+        : '????';
+      const pid = desc
+        ? desc.idProduct.toString(16).padStart(4, '0')
+        : '????';
+
+      log.info(`[USB] Opening device ${vid}:${pid} for write (${data.length} bytes)...`);
+
       try {
         device.open();
+      } catch (openErr) {
+        log.error(`[USB] Failed to open device ${vid}:${pid}: ${openErr.message}`);
+        reject(
+          new Error(
+            `无法打开 USB 设备 ${vid}:${pid}: ${openErr.message}。` +
+            `可能需要管理员权限或配置 udev 规则。`
+          )
+        );
+        return;
+      }
 
+      try {
         const configDesc = device.configDescriptor;
         if (!configDesc) {
           device.close();
@@ -400,17 +431,20 @@ class PrinterService extends EventEmitter {
         // Detach kernel driver if needed (Linux)
         try {
           if (iface.isKernelDriverActive()) {
+            log.info(`[USB] Detaching kernel driver on interface ${interfaceNum}`);
             iface.detachKernelDriver();
           }
         } catch (e) {
           // Windows doesn't support kernel driver operations, ignore
         }
 
+        log.info(`[USB] Claiming interface ${interfaceNum}...`);
         iface.claim();
 
         // Get the endpoint
         const endpoint = iface.endpoint(outEndpoint.bEndpointAddress);
 
+        log.info(`[USB] Transferring ${data.length} bytes to endpoint...`);
         // Transfer data
         endpoint.transfer(data, (err) => {
           try {
