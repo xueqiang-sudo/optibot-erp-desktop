@@ -280,9 +280,12 @@
       zpl += `^PW${widthDots}\n`;
       zpl += `^LL${heightDots}\n`;
 
-      for (const el of elements) {
+      for (let i = 0; i < elements.length; i++) {
+        const el = elements[i];
         const x = Math.round((el.x || 0) * dotsPerMM);
         const y = Math.round((el.y || 0) * dotsPerMM);
+
+        console.log(`[OptiBot Bridge] Element ${i}: type=${el.type}, x=${el.x}, y=${el.y}`);
 
         switch (el.type) {
           case 'text':
@@ -483,9 +486,34 @@
      * @throws {Error} If no printer available or print fails
      */
     async printFromJSON(json) {
-      const zplData = this.buildZPL(json);
-      console.log('[OptiBot Bridge] Generated ZPL:\n', zplData);
-      return await this.printLabel(zplData);
+      try {
+        // If json is a string, parse it
+        if (typeof json === 'string') {
+          console.log('[OptiBot Bridge] printFromJSON received string, parsing...');
+          json = JSON.parse(json);
+        }
+
+        // Validate
+        if (!json || typeof json !== 'object') {
+          throw new Error('Invalid JSON: must be an object');
+        }
+        if (!Array.isArray(json.elements)) {
+          throw new Error('Invalid JSON: elements must be an array');
+        }
+
+        console.log(
+          `[OptiBot Bridge] printFromJSON: ${json.elements.length} elements, ` +
+          `${json.width}x${json.height}mm`
+        );
+
+        const zplData = this.buildZPL(json);
+        console.log('[OptiBot Bridge] Generated ZPL:\n', zplData);
+        return await this.printLabel(zplData);
+      } catch (err) {
+        console.error('[OptiBot Bridge] printFromJSON error:', err.message, err.stack);
+        this._showPrintResultDialog(false, err.message, null, '');
+        throw err;
+      }
     },
 
     // ─── Weight Widget ───────────────────────────────────────────
