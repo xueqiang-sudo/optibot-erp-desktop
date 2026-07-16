@@ -147,6 +147,9 @@
         }
       }
 
+      // Show debug dialog with printer list
+      this._showPrinterDialog(this.printers);
+
       return this.printers;
     },
 
@@ -345,6 +348,135 @@
           if (valueEl) valueEl.textContent = '-- kg';
         }
       }
+    },
+
+    /**
+     * Show a dialog listing discovered printers (for debugging)
+     * @param {Array} printers
+     * @private
+     */
+    _showPrinterDialog(printers) {
+      // Remove existing dialog if any
+      const existing = document.getElementById('optibot-printer-dialog');
+      if (existing) existing.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'optibot-printer-dialog';
+      overlay.style.cssText =
+        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+
+      let listHtml;
+      if (printers.length === 0) {
+        listHtml =
+          '<div style="color:#e74c3c;font-size:16px;padding:20px;text-align:center;">未检测到打印机<br><span style="font-size:13px;color:#999;">请检查USB连接后重试</span></div>';
+      } else {
+        listHtml =
+          '<table style="width:100%;border-collapse:collapse;font-size:14px;">' +
+          '<thead><tr style="background:#f0f0f0;">' +
+          '<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">名称</th>' +
+          '<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">ID</th>' +
+          '<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">制造商</th>' +
+          '<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #ddd;">端口</th>' +
+          '</tr></thead><tbody>';
+        printers.forEach((p, i) => {
+          const bg = i % 2 === 0 ? '#fff' : '#f9f9f9';
+          listHtml +=
+            `<tr style="background:${bg};">` +
+            `<td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:bold;">${p.name || '-'}</td>` +
+            `<td style="padding:8px 12px;border-bottom:1px solid #eee;font-family:monospace;color:#1a73e8;">${p.id}</td>` +
+            `<td style="padding:8px 12px;border-bottom:1px solid #eee;">${p.manufacturer || '-'}</td>` +
+            `<td style="padding:8px 12px;border-bottom:1px solid #eee;">${p.port || '-'}</td>` +
+            '</tr>';
+        });
+        listHtml += '</tbody></table>';
+      }
+
+      overlay.innerHTML = `
+        <div style="
+          background:#fff;
+          border-radius:12px;
+          padding:0;
+          min-width:500px;
+          max-width:700px;
+          box-shadow:0 8px 32px rgba(0,0,0,0.3);
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+          overflow:hidden;
+        ">
+          <div style="
+            background:linear-gradient(135deg,#1a73e8,#1557b0);
+            color:#fff;
+            padding:16px 24px;
+            font-size:18px;
+            font-weight:bold;
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+          ">
+            <span>🖨️ 打印机列表 (${printers.length} 台)</span>
+            <button id="optibot-printer-dialog-close" style="
+              background:rgba(255,255,255,0.2);
+              border:none;
+              color:#fff;
+              width:32px;
+              height:32px;
+              border-radius:50%;
+              font-size:18px;
+              cursor:pointer;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+            ">✕</button>
+          </div>
+          <div style="padding:16px 24px;max-height:400px;overflow-y:auto;">
+            ${listHtml}
+          </div>
+          <div style="
+            padding:12px 24px;
+            background:#f5f5f5;
+            text-align:right;
+            border-top:1px solid #eee;
+          ">
+            <button id="optibot-printer-dialog-refresh" style="
+              background:#1a73e8;
+              color:#fff;
+              border:none;
+              padding:8px 20px;
+              border-radius:6px;
+              font-size:14px;
+              cursor:pointer;
+              margin-right:8px;
+            ">🔄 刷新</button>
+            <button id="optibot-printer-dialog-ok" style="
+              background:#e0e0e0;
+              color:#333;
+              border:none;
+              padding:8px 20px;
+              border-radius:6px;
+              font-size:14px;
+              cursor:pointer;
+            ">确定</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      // Close handlers
+      const closeDialog = () => overlay.remove();
+      document.getElementById('optibot-printer-dialog-close').onclick =
+        closeDialog;
+      document.getElementById('optibot-printer-dialog-ok').onclick =
+        closeDialog;
+      overlay.onclick = (e) => {
+        if (e.target === overlay) closeDialog();
+      };
+
+      // Refresh handler
+      document.getElementById('optibot-printer-dialog-refresh').onclick =
+        async () => {
+          overlay.remove();
+          await this.listPrinters();
+        };
     },
 
     /**

@@ -169,6 +169,24 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
   });
 
   // ★ Load URL directly (no debug dialog)
+  // ★ Fix nginx virtual host issue: ensure correct Host header
+  const { session } = require('electron');
+  const targetUrl = new URL(FRAPPE_URL);
+
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${targetUrl.origin}/*`] },
+    (details, callback) => {
+      // Force Host header to match what nginx expects
+      details.requestHeaders['Host'] = targetUrl.host;
+      // Use Chrome-like User-Agent to avoid server-side blocking
+      details.requestHeaders['User-Agent'] = details.requestHeaders['User-Agent'].replace(
+        /Electron\/[\d.]+/,
+        'Chrome/120.0.0.0'
+      );
+      callback({ requestHeaders: details.requestHeaders });
+    }
+  );
+
   log.info(`Loading URL: ${FRAPPE_URL}`);
   mainWindow.loadURL(FRAPPE_URL).then(() => {
     log.info('Page loaded successfully');
