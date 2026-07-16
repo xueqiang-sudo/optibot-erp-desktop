@@ -60,6 +60,7 @@ class PrinterService extends EventEmitter {
 
   /**
    * List available USB printers
+   * Scans ALL USB devices using multiple detection strategies.
    * @returns {Promise<Array<{id: string, name: string, manufacturer: string, serialNumber: string, port: string, vid: string, pid: string}>>}
    */
   async listPrinters() {
@@ -67,20 +68,42 @@ class PrinterService extends EventEmitter {
 
     try {
       const devices = usb.getDeviceList();
+      log.info(`USB device scan: found ${devices.length} total devices`);
 
       for (const device of devices) {
-        if (this._isPrinterDevice(device)) {
-          const info = await this._getDeviceInfo(device);
-          printers.push(info);
-          // Cache known printer
-          this.knownPrinters.set(info.id, {
-            vid: info.vid,
-            pid: info.pid,
-            name: info.name,
-            device: device,
-          });
+        const desc = device.deviceDescriptor;
+        if (!desc) continue;
+
+        const vid = desc.idVendor.toString(16).padStart(4, '0');
+        const pid = desc.idProduct.toString(16).padStart(4, '0');
+        const isPrinter = this._isPrinterDevice(device);
+
+        log.info(
+          `  USB ${vid}:${pid} class=0x${desc.bDeviceClass.toString(16)} ` +
+          `subclass=0x${desc.bDeviceSubClass?.toString(16) || '00'} ` +
+          `protocol=0x${desc.bDeviceProtocol?.toString(16) || '00'} ` +
+          `→ ${isPrinter ? '✅ PRINTER' : 'skip'}`
+        );
+
+        if (isPrinter) {
+          try {
+            const info = await this._getDeviceInfo(device);
+            printers.push(info);
+            log.info(`  → Printer: ${info.name} (${info.id}) [${info.port}]`);
+            // Cache known printer
+            this.knownPrinters.set(info.id, {
+              vid: info.vid,
+              pid: info.pid,
+              name: info.name,
+              device: device,
+            });
+          } catch (infoErr) {
+            log.warn(`  → Failed to read device info for ${vid}:${pid}:`, infoErr.message);
+          }
         }
       }
+
+      log.info(`Printer scan complete: ${printers.length} printer(s) found`);
     } catch (err) {
       log.error('Failed to enumerate USB printers:', err.message);
     }
@@ -151,7 +174,12 @@ class PrinterService extends EventEmitter {
   // ─── Private Methods ─────────────────────────────────────────
 
   /**
-   * Check if a USB device is a printer
+   * Check if a USB device is a printer.
+   * Uses multiple detection strategies:
+   *  1. Known VID/PID list
+   *  2. Device-level bDeviceClass === 0x07
+   *  3. Interface-level bInterfaceClass === 0x07
+   *  4. Config descriptor interface class check (without open/close)
    * @param {usb.Device} device
    * @returns {boolean}
    * @private
@@ -160,29 +188,42 @@ class PrinterService extends EventEmitter {
     const desc = device.deviceDescriptor;
     if (!desc) return false;
 
-    // Check against known TSC identifiers
+    // Strategy 1: Check against known TSC identifiers
     for (const known of TSC_USB_IDENTIFIERS) {
       if (desc.idVendor === known.vid && desc.idProduct === known.pid) {
         return true;
       }
     }
 
-    // Check USB device class for printer class (0x07)
-    try {
-      if (desc.bDeviceClass === USB_CLASS_PRINTER) {
-        return true;
-      }
+    // Strategy 2: Device-level USB printer class (0x07)
+    if (desc.bDeviceClass === USB_CLASS_PRINTER) {
+      return true;
+    }
 
-      // Many printers report printer class at interface level, not device level.
-      // Fall back to checking interface descriptors.
+    // Strategy 3: Check interface-level printer class by opening the device
+    try {
       if (this._hasPrinterInterface(device)) {
         return true;
       }
-
-      return false;
     } catch (err) {
-      return false;
+      // Strategy 4: Some devices expose configDescriptor without opening
+      try {
+        const configDesc = device.configDescriptor;
+        if (configDesc && configDesc.interfaces) {
+          for (const iface of configDesc.interfaces) {
+            for (const alt of iface) {
+              if (alt.bInterfaceClass === USB_CLASS_PRINTER) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
     }
+
+    return false;
   }
 
   /**
@@ -192,22 +233,27 @@ class PrinterService extends EventEmitter {
    * @private
    */
   _hasPrinterInterface(device) {
+    let opened = false;
     try {
       device.open();
+      opened = true;
       const configDesc = device.configDescriptor;
-      device.close();
 
       if (configDesc && configDesc.interfaces) {
         for (const iface of configDesc.interfaces) {
           for (const alt of iface) {
             if (alt.bInterfaceClass === USB_CLASS_PRINTER) {
+              if (opened) device.close();
               return true;
             }
           }
         }
       }
+
+      if (opened) device.close();
     } catch (err) {
-      // Device may be busy, ignore
+      log.debug(`_hasPrinterInterface: could not open device: ${err.message}`);
+      try { if (opened) device.close(); } catch (e) { /* ignore */ }
     }
     return false;
   }

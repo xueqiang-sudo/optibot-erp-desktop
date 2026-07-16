@@ -299,6 +299,52 @@ function registerIPCHandlers() {
     return await printerService.listPrinters();
   });
 
+  // ★ Diagnostic: list ALL USB devices (for debugging printer detection)
+  ipcMain.handle('printer:list-all-usb', () => {
+    try {
+      const usb = require('usb');
+      const devices = usb.getDeviceList();
+      return devices.map((device) => {
+        const desc = device.deviceDescriptor;
+        if (!desc) return { error: 'no descriptor' };
+        const vid = desc.idVendor.toString(16).padStart(4, '0');
+        const pid = desc.idProduct.toString(16).padStart(4, '0');
+
+        let interfaces = [];
+        try {
+          device.open();
+          const configDesc = device.configDescriptor;
+          if (configDesc && configDesc.interfaces) {
+            interfaces = configDesc.interfaces.map((iface) =>
+              iface.map((alt) => ({
+                class: '0x' + alt.bInterfaceClass.toString(16),
+                subclass: '0x' + alt.bInterfaceSubClass.toString(16),
+                protocol: '0x' + alt.bInterfaceProtocol.toString(16),
+              }))
+            );
+          }
+          device.close();
+        } catch (e) {
+          interfaces = [{ error: e.message }];
+        }
+
+        return {
+          id: `${vid}:${pid}`,
+          vid: `0x${vid}`,
+          pid: `0x${pid}`,
+          deviceClass: '0x' + desc.bDeviceClass.toString(16),
+          deviceSubClass: '0x' + (desc.bDeviceSubClass || 0).toString(16),
+          deviceProtocol: '0x' + (desc.bDeviceProtocol || 0).toString(16),
+          busNumber: device.busNumber,
+          deviceAddress: device.deviceAddress,
+          interfaces,
+        };
+      });
+    } catch (err) {
+      return [{ error: err.message }];
+    }
+  });
+
   ipcMain.handle('printer:print', async (_event, printerId, zplData) => {
     return await printerService.printZPL(printerId, zplData);
   });

@@ -171,6 +171,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listPrinters: () => ipcRenderer.invoke('printer:list'),
 
     /**
+     * [Debug] List ALL USB devices with their descriptors
+     * @returns {Promise<Array>} All USB devices (not just printers)
+     */
+    listAllUSBDevices: () => ipcRenderer.invoke('printer:list-all-usb'),
+
+    /**
      * Send ZPL data to printer (auto-checks font preload status)
      * @param {string} printerId - Printer identifier from listPrinters()
      * @param {string} zplData - Complete ZPL string (e.g., '^XA...^XZ')
