@@ -323,7 +323,7 @@
       const rowHeightDots = Math.round(rowHeightMM * dotsPerMM);
       const border = el.border !== false;
       const borderThickness = el.border_thickness || 2;
-      const cellFontSize = el.cell_font_size || 16;
+      const defaultCellFontSize = el.cell_font_size || 16;
       const headerFontSize = el.header_font_size || 20;
       const chinese = el.chinese !== false;
       const showHeader = el.show_header !== false;
@@ -335,18 +335,15 @@
 
       // ── Draw border grid ──
       if (border) {
-        // Outer border
         const xEnd = tableX + totalTableWidthDots - 1;
         const yEnd = tableY + totalTableHeightDots - 1;
         tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
 
-        // Horizontal lines between rows
         for (let r = 1; r < maxRows; r++) {
           const ly = tableY + r * rowHeightDots;
           tspl += `BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}\n`;
         }
 
-        // Vertical lines between columns
         let cx = tableX;
         for (let c = 1; c < columns.length; c++) {
           cx += colWidthsDots[c - 1];
@@ -354,28 +351,52 @@
         }
       }
 
-      // Font multiplier for Chinese text (x2 for readable size)
-      const chnMul = Math.max(2, Math.round(cellFontSize / 24) * 2);
-      const chnHeaderMul = Math.max(2, Math.round(headerFontSize / 24) * 2);
-      // Built-in font multipliers
-      const engMulY = Math.max(1, Math.round(cellFontSize / 12));
-      const engMulX = Math.max(1, Math.round(cellFontSize / 8));
-      const engHeaderMulY = Math.max(1, Math.round(headerFontSize / 12));
-      const engHeaderMulX = Math.max(1, Math.round(headerFontSize / 8));
+      // ── Helper: calculate font multiplier based on font size ──
+      // CHN TTF font: ~24 dots height at mul=1, scales proportionally
+      // For table cells, use conservative sizing to fit within cells
+      function chnMulForSize(fontSize) {
+        return Math.max(1, Math.round(fontSize / 24));
+      }
+      // Built-in font "1": 8x12 dots base
+      function engMulXForSize(fontSize) {
+        return Math.max(1, Math.round(fontSize / 10));
+      }
+      function engMulYForSize(fontSize) {
+        return Math.max(1, Math.round(fontSize / 14));
+      }
+      // Estimate rendered text width in dots
+      function estimateTextWidth(text, fontSize, isChinese) {
+        if (isChinese) {
+          // CHN TTF: each char ≈ fontSize dots wide at the matching mul
+          const mul = chnMulForSize(fontSize);
+          return text.length * 24 * mul;
+        } else {
+          // Built-in "1": each char ≈ 8 * mulX dots wide
+          const mulX = engMulXForSize(fontSize);
+          return text.length * 8 * mulX;
+        }
+      }
 
       // ── Draw header row ──
       if (showHeader) {
         let hx = tableX;
+        const hMul = chnMulForSize(headerFontSize);
+        const hEngX = engMulXForSize(headerFontSize);
+        const hEngY = engMulYForSize(headerFontSize);
+
         for (let c = 0; c < columns.length; c++) {
           if (columns[c].header) {
-            const textX = hx + 2;
-            const textY = tableY + 2;
             const header = (columns[c].header || '').replace(/"/g, '""');
             if (header) {
+              const cellW = colWidthsDots[c];
+              const textW = estimateTextWidth(header, headerFontSize, chinese);
+              const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
+              const textY = tableY + 2;
+
               if (chinese) {
-                tspl += `TEXT ${textX},${textY},"CHN",0,${chnHeaderMul},${chnHeaderMul},"${header}"\n`;
+                tspl += `TEXT ${hx + offsetX},${textY},"CHN",0,${hMul},${hMul},"${header}"\n`;
               } else {
-                tspl += `TEXT ${textX},${textY},"1",0,${engHeaderMulX},${engHeaderMulY},"${header}"\n`;
+                tspl += `TEXT ${hx + offsetX},${textY},"1",0,${hEngX},${hEngY},"${header}"\n`;
               }
             }
           }
@@ -386,7 +407,6 @@
       // ── Draw cell content ──
       for (let r = 0; r < maxRows; r++) {
         const cellY = tableY + r * rowHeightDots;
-        const textOffsetY = Math.max(1, Math.round((rowHeightDots - cellFontSize) / 2));
 
         let cellX = tableX;
         for (let c = 0; c < columns.length; c++) {
@@ -396,24 +416,37 @@
           const content = rawContent.replace(/"/g, '""');
 
           if (content) {
+            // ★ Read per-cell font_size from override, fall back to default
+            const fontSize = (override && override.font_size) || defaultCellFontSize;
             const align = columns[c].align || 'left';
-            const charWidth = cellFontSize * 0.6;
-            const textWidthDots = rawContent.length * charWidth;
             const cellW = colWidthsDots[c];
 
+            // Calculate font multipliers for this cell's font size
+            const cMul = chnMulForSize(fontSize);
+            const eMulX = engMulXForSize(fontSize);
+            const eMulY = engMulYForSize(fontSize);
+
+            // Estimate text width for alignment
+            const textW = estimateTextWidth(rawContent, fontSize, chinese);
+            const renderedH = chinese ? 24 * cMul : 12 * eMulY;
+
+            // Vertical centering based on actual rendered height
+            const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2));
+
+            // Horizontal alignment
             let offsetX;
             if (align === 'center') {
-              offsetX = Math.max(2, Math.round((cellW - textWidthDots) / 2));
+              offsetX = Math.max(2, Math.round((cellW - textW) / 2));
             } else if (align === 'right') {
-              offsetX = Math.max(2, cellW - textWidthDots - 4);
+              offsetX = Math.max(2, cellW - textW - 4);
             } else {
               offsetX = 2;
             }
 
             if (chinese) {
-              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"CHN",0,${chnMul},${chnMul},"${content}"\n`;
+              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"CHN",0,${cMul},${cMul},"${content}"\n`;
             } else {
-              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"1",0,${engMulX},${engMulY},"${content}"\n`;
+              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"1",0,${eMulX},${eMulY},"${content}"\n`;
             }
           }
 
