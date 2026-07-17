@@ -292,8 +292,12 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert TSPL string to UTF-8 Buffer, then Base64 for PowerShell
-    const buffer = Buffer.from(data, 'utf-8');
+    // Convert TSPL string to UTF-8 Buffer with BOM prefix
+    // BOM (EF BB BF) signals the TSC printer to use UTF-8 encoding mode,
+    // overriding any CODEPAGE the TSC driver may have set during initialization
+    const UTF8_BOM = Buffer.from([0xEF, 0xBB, 0xBF]);
+    const dataBuffer = Buffer.from(data, 'utf-8');
+    const buffer = Buffer.concat([UTF8_BOM, dataBuffer]);
     const base64Data = buffer.toString('base64');
 
     // ★ Debug: save TSPL data to application directory for manual testing
