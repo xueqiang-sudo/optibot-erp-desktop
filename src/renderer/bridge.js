@@ -195,7 +195,6 @@
       tspl += `SIZE ${width} mm,${height} mm\n`;
       tspl += `GAP 2 mm,0 mm\n`;
       tspl += `DIRECTION 1\n`;
-      tspl += `CODEPAGE UTF-8\n`;
       tspl += `CLS\n`;
 
       // ── Render elements ──
@@ -287,9 +286,9 @@
 
       if (el.chinese) {
         // Use "CHN" TrueType font from printer flash
-        // Font multiplier: approximate scaling based on desired height
         // CHN font base height is ~24 dots at multiplier 1
-        const mul = Math.max(1, Math.round(h / 24));
+        // Multiply by 2 for readable Chinese text
+        const mul = Math.max(2, Math.round(h / 24) * 2);
         return `TEXT ${x},${y},"CHN",${rot},${mul},${mul},"${content}"\n`;
       } else {
         // Built-in font "1" = 8x12 dots base
@@ -345,9 +344,9 @@
         }
       }
 
-      // Font multiplier for Chinese text
-      const chnMul = Math.max(1, Math.round(cellFontSize / 24));
-      const chnHeaderMul = Math.max(1, Math.round(headerFontSize / 24));
+      // Font multiplier for Chinese text (x2 for readable size)
+      const chnMul = Math.max(2, Math.round(cellFontSize / 24) * 2);
+      const chnHeaderMul = Math.max(2, Math.round(headerFontSize / 24) * 2);
       // Built-in font multipliers
       const engMulY = Math.max(1, Math.round(cellFontSize / 12));
       const engMulX = Math.max(1, Math.round(cellFontSize / 8));
