@@ -396,6 +396,18 @@ function registerIPCHandlers() {
     return printerService.getStatus();
   });
 
+  // ★ Debug log: append text to debug log file in app directory
+  ipcMain.handle('app:debug-log', (_event, text) => {
+    try {
+      const logFile = path.join(path.dirname(process.execPath), 'debug-scale.log');
+      fs.appendFileSync(logFile, text, 'utf-8');
+      return true;
+    } catch (err) {
+      log.warn('Debug log write failed:', err.message);
+      return false;
+    }
+  });
+
   ipcMain.handle('app:get-version', () => {
     return app.getVersion();
   });

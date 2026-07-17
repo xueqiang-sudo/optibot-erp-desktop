@@ -64,6 +64,10 @@
       window.electronAPI.scale.onWeight((data) => {
         this.currentWeight = data;
         this._updateWeightWidget();
+        this._updateScaleWeightDialog(data);
+        // Log weight data to debug file
+        const logLine = `[${new Date().toISOString()}] weight=${data.value} unit=${data.unit} stable=${data.stable} raw=${data.raw}\n`;
+        window.electronAPI.app.debugLog(logLine).catch(() => {});
         window.dispatchEvent(new CustomEvent('optibot:weight', { detail: data }));
       });
 
@@ -77,8 +81,15 @@
     },
 
     async connectScale(port, options) {
-      await window.electronAPI.scale.connect(port, options);
-      this.scaleConnected = true;
+      try {
+        await window.electronAPI.scale.connect(port, options);
+        this.scaleConnected = true;
+        this._showScaleDialog(true, `串口 ${port} 连接成功`, null);
+      } catch (err) {
+        this.scaleConnected = false;
+        this._showScaleDialog(false, `串口 ${port} 连接失败`, err.message);
+        throw err;
+      }
     },
 
     async disconnectScale() {
@@ -682,6 +693,111 @@
         overlay.remove();
         await this.listPrinters();
       };
+    },
+
+    /**
+     * Show scale connection result dialog (success or failure)
+     * @param {boolean} success
+     * @param {string} message
+     * @param {string|null} errorMsg
+     * @private
+     */
+    _showScaleDialog(success, message, errorMsg) {
+      const existing = document.getElementById('optibot-scale-dialog');
+      if (existing) existing.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'optibot-scale-dialog';
+      overlay.style.cssText =
+        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
+
+      const icon = success ? '✅' : '❌';
+      const titleBg = success
+        ? 'linear-gradient(135deg,#43a047,#2e7d32)'
+        : 'linear-gradient(135deg,#e53935,#c62828)';
+
+      const errorHtml = errorMsg
+        ? `<div style="margin:12px 0;padding:10px;background:#ffebee;border-radius:6px;color:#c62828;font-size:13px;"><b>原因：</b>${errorMsg}</div>`
+        : '';
+
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:0;min-width:360px;max-width:450px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
+          <div style="background:${titleBg};color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
+            <span>${icon} 电子秤连接</span>
+            <button id="optibot-scale-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+          </div>
+          <div style="padding:16px 24px;">
+            <div style="font-size:15px;color:#333;">${message}</div>
+            ${errorHtml}
+          </div>
+          <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">
+            <button id="optibot-scale-dialog-ok" style="background:#1a73e8;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:14px;cursor:pointer;">确定</button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      const closeDialog = () => overlay.remove();
+      document.getElementById('optibot-scale-dialog-close').onclick = closeDialog;
+      document.getElementById('optibot-scale-dialog-ok').onclick = closeDialog;
+      overlay.onclick = (e) => { if (e.target === overlay) closeDialog(); };
+
+      // Auto-close success after 3 seconds
+      if (success) setTimeout(closeDialog, 3000);
+    },
+
+    /**
+     * Update or create a floating weight dialog showing current weight
+     * @param {Object} data - Weight data { value, unit, stable, raw }
+     * @private
+     */
+    _updateScaleWeightDialog(data) {
+      let dialog = document.getElementById('optibot-weight-dialog');
+
+      if (!dialog) {
+        dialog = document.createElement('div');
+        dialog.id = 'optibot-weight-dialog';
+        dialog.style.cssText =
+          'position:fixed;top:20px;right:20px;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.2);z-index:999998;min-width:200px;font-family:-apple-system,sans-serif;overflow:hidden;';
+
+        dialog.innerHTML = `
+          <div style="background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;padding:10px 16px;font-size:14px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
+            <span>⚖️ 电子秤重量</span>
+            <button id="optibot-weight-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+          </div>
+          <div style="padding:16px;text-align:center;">
+            <div id="optibot-weight-dialog-value" style="font-size:32px;font-weight:bold;color:#333;">-- kg</div>
+            <div id="optibot-weight-dialog-status" style="font-size:12px;color:#999;margin-top:6px;">等待数据...</div>
+          </div>
+        `;
+
+        document.body.appendChild(dialog);
+
+        // Close handler: hide dialog but keep receiving data
+        document.getElementById('optibot-weight-dialog-close').onclick = () => {
+          dialog.style.display = 'none';
+        };
+
+        // Make draggable
+        this._makeDraggable(dialog);
+      }
+
+      dialog.style.display = '';
+
+      // Update values
+      const valueEl = document.getElementById('optibot-weight-dialog-value');
+      const statusEl = document.getElementById('optibot-weight-dialog-status');
+
+      if (valueEl) {
+        valueEl.textContent = `${data.value} ${data.unit || 'kg'}`;
+        valueEl.style.color = data.stable ? '#2e7d32' : '#f57c00';
+      }
+
+      if (statusEl) {
+        statusEl.textContent = data.stable ? '✓ 稳定' : '○ 读取中...';
+        statusEl.style.color = data.stable ? '#4caf50' : '#ff9800';
+      }
     },
 
     _makeDraggable(el) {
