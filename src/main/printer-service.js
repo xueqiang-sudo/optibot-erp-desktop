@@ -21,6 +21,7 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const iconv = require('iconv-lite');
 const log = require('electron-log');
 
 // PowerShell path (available on all modern Windows systems)
@@ -292,12 +293,12 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert TSPL string to UTF-8 Buffer with BOM prefix
-    // BOM (EF BB BF) signals the TSC printer to use UTF-8 encoding mode,
-    // overriding any CODEPAGE the TSC driver may have set during initialization
-    const UTF8_BOM = Buffer.from([0xEF, 0xBB, 0xBF]);
-    const dataBuffer = Buffer.from(data, 'utf-8');
-    const buffer = Buffer.concat([UTF8_BOM, dataBuffer]);
+    // Convert TSPL string to GB2312 encoding
+    // The TSC Windows driver sets the printer's CODEPAGE to a Chinese encoding
+    // (typically GB2312). We must match this encoding so the printer correctly
+    // interprets Chinese characters. GB2312 is backward-compatible with ASCII
+    // (bytes 0x00-0x7F are identical), so TSPL commands are unaffected.
+    const buffer = iconv.encode(data, 'gb2312');
     const base64Data = buffer.toString('base64');
 
     // ★ Debug: save TSPL data to application directory for manual testing
