@@ -8,20 +8,24 @@
  * - The printer must be installed in Windows with its driver (e.g., TSC driver)
  * - We use the Windows Spooler API (OpenPrinter, WritePrinter, etc.) via PowerShell
  * - RAW mode sends ZPL data directly to the printer without driver processing
- * - This is more reliable than direct USB access (libusb) because:
- *   - Windows manages the USB communication through the driver
- *   - No need to claim USB interfaces or find endpoints
- *   - Works with shared printers, network printers, etc.
- *   - No conflicts with other applications using the printer
  *
- * Important:
- * - ZPL strings are sent as UTF-8 encoded data to support Chinese text
- * - Font code 'C' must be pre-loaded via FontPreloader before using ^AC in ZPL
- * - Printer ID is the Windows printer name (e.g., "TSC TE344")
+ * Chinese font support:
+ * - The ^CW font mapping command is included in EVERY print job (same job as label data)
+ * - This ensures the font mapping survives the Spooler's job boundaries
+ * - Previously (with libusb) the mapping was sent as a separate USB write,
+ *   but Windows Spooler may reset printer state between jobs
+ *
+ * Encoding:
+ * - PowerShell scripts are written to UTF-8 BOM temp files and executed with -File
+ * - This avoids command-line encoding issues with Chinese characters
+ * - ZPL data is base64-encoded to safely embed in the PowerShell script
  */
 
 const { EventEmitter } = require('events');
 const { execFile } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const log = require('electron-log');
 
 // PowerShell path (available on all modern Windows systems)
@@ -34,6 +38,13 @@ const POLL_INTERVAL = 5000;
 // Timeout for PowerShell commands (ms)
 const LIST_TIMEOUT = 10000;
 const PRINT_TIMEOUT = 15000;
+
+// ZPL font mapping command: maps font code 'C' to E:CHN.TTF on printer flash
+// This MUST be included in the same print job as label data for Windows Spooler
+const FONT_MAP_COMMAND = '^XA^CWC,E:CHN.TTF^XZ\n';
+
+// Temp directory for PowerShell scripts
+const TEMP_DIR = os.tmpdir();
 
 /**
  * PowerShell script to list installed printers.
@@ -168,6 +179,9 @@ class PrinterService extends EventEmitter {
     this.pollTimer = null;
     this.polling = false;
 
+    // Track which printers have font mapping included (for logging)
+    this.fontMapped = new Set();
+
     // Bind methods
     this._pollPrinters = this._pollPrinters.bind(this);
   }
@@ -196,7 +210,7 @@ class PrinterService extends EventEmitter {
 
   /**
    * List available printers installed in Windows.
-   * @returns {Promise<Array<{id: string, name: string, manufacturer: string, product: string, serialNumber: string, port: string, driverName: string}>>}
+   * @returns {Promise<Array<{id: string, name: string, driverName: string, port: string}>>}
    */
   async listPrinters() {
     try {
@@ -228,7 +242,7 @@ class PrinterService extends EventEmitter {
         const info = {
           id: name,                         // Use Windows printer name as ID
           name: name,
-          manufacturer: '',                 // Not directly available from Get-Printer
+          manufacturer: '',
           product: '',
           serialNumber: '',
           port: p.PortName || '',
@@ -254,28 +268,38 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Send ZPL data to the printer (with automatic font preload check).
-   * Uses the Windows Spooler API to send raw data through the printer driver.
+   * Send ZPL data to the printer.
+   *
+   * KEY FIX: The ^CW font mapping command is prepended to the label ZPL data
+   * and sent in the SAME Spooler print job. This ensures the Chinese font
+   * mapping is active when the label data is processed.
+   *
+   * With direct USB (libusb), sending ^CW as a separate write worked because
+   * the printer's DRAM persisted the mapping. But the Windows Spooler may
+   * reset printer state between jobs, causing the font mapping to be lost.
    *
    * @param {string} printerId - Windows printer name
    * @param {string} zplData - Complete ZPL string
    * @returns {Promise<{success: boolean}>}
    */
   async printZPL(printerId, zplData) {
-    // Auto-preload font if not loaded
-    if (this.fontPreloader && !this.fontPreloader.isFontLoaded(printerId)) {
-      log.info(`[PrinterService] Font not loaded for "${printerId}", preloading...`);
-      try {
-        await this.fontPreloader.preloadFont(printerId);
-      } catch (fontErr) {
-        log.warn(`[PrinterService] Font preload failed for "${printerId}": ${fontErr.message}, continuing with print...`);
-      }
-    }
+    // ★ Always prepend font mapping to ensure Chinese font is available
+    // This is sent in the same print job as the label data
+    const fullData = FONT_MAP_COMMAND + zplData;
 
-    // Send the raw ZPL data with timeout
+    log.info(`[PrinterService] Print with embedded font mapping for "${printerId}"`);
+
+    // Mark font as loaded (since we're including it in this job)
+    if (this.fontPreloader) {
+      this.fontPreloader.fontLoaded.set(printerId, true);
+      this.fontPreloader.lastPreloadTime.set(printerId, Date.now());
+    }
+    this.fontMapped.add(printerId);
+
+    // Send the combined data with timeout
     const timeoutMs = PRINT_TIMEOUT;
     await Promise.race([
-      this.sendRaw(printerId, zplData),
+      this.sendRaw(printerId, fullData),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
       ),
@@ -286,6 +310,11 @@ class PrinterService extends EventEmitter {
   /**
    * Send raw data to the printer via Windows Spooler API.
    * The data is sent in RAW mode — no processing by the printer driver.
+   *
+   * Uses a temp file approach to avoid command-line encoding issues:
+   * 1. Write PowerShell script to a UTF-8 BOM temp file
+   * 2. Execute with powershell.exe -File (more reliable than -Command for complex scripts)
+   * 3. Clean up temp file after execution
    *
    * @param {string} printerId - Windows printer name
    * @param {string} data - Data string to send (ZPL commands)
@@ -304,11 +333,11 @@ class PrinterService extends EventEmitter {
       `[PrinterService] Sending raw data to "${printerId}" (${buffer.length} bytes, ${data.length} chars)`
     );
 
-    // Build the PowerShell script with embedded data
+    // Build the PowerShell script with embedded base64 data
     const docName = `ZPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;
     const script = buildRawPrintScript(printerId, base64Data, docName);
 
-    // Execute the PowerShell script
+    // Execute the PowerShell script (using temp file for reliable encoding)
     const result = await this._runPowerShell(script, PRINT_TIMEOUT);
 
     if (result && result.trim() === 'OK') {
@@ -338,6 +367,7 @@ class PrinterService extends EventEmitter {
       this.pollTimer = null;
     }
     this.knownPrinters.clear();
+    this.fontMapped.clear();
     this.removeAllListeners();
   }
 
@@ -372,6 +402,7 @@ class PrinterService extends EventEmitter {
         if (!currentNames.has(name)) {
           log.info(`[PrinterService] Printer detached: "${name}"`);
           this.knownPrinters.delete(name);
+          this.fontMapped.delete(name);
           this.emit('printer-detached', name);
         }
       }
@@ -420,7 +451,13 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Run a PowerShell script and return stdout.
+   * Run a PowerShell script using a temp file for reliable encoding.
+   *
+   * Why temp file + -File instead of -Command:
+   * - The -Command parameter passes the script through the Windows command line,
+   *   which can mangle Unicode/Chinese characters in certain environments.
+   * - Writing to a UTF-8 BOM file and using -File guarantees correct encoding
+   *   regardless of the system's code page or console encoding.
    *
    * @param {string} script - PowerShell script to execute
    * @param {number} timeout - Timeout in milliseconds
@@ -429,7 +466,17 @@ class PrinterService extends EventEmitter {
    */
   _runPowerShell(script, timeout = 10000) {
     return new Promise((resolve, reject) => {
-      const args = [...POWERSHELL_ARGS, '-Command', script];
+      // Write script to temp file with UTF-8 BOM encoding
+      const scriptFile = path.join(
+        TEMP_DIR,
+        `optibot-ps-${process.pid}-${Date.now()}.ps1`
+      );
+
+      // UTF-8 BOM ensures PowerShell reads the file correctly
+      const BOM = '﻿';
+      fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
+
+      const args = [...POWERSHELL_ARGS, '-File', scriptFile];
 
       const child = execFile(POWERSHELL, args, {
         timeout,
@@ -437,6 +484,13 @@ class PrinterService extends EventEmitter {
         windowsHide: true,
         encoding: 'utf-8',
       }, (error, stdout, stderr) => {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(scriptFile);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+
         if (error) {
           if (error.killed) {
             reject(new Error(`PowerShell 命令执行超时 (${timeout / 1000}秒)`));
