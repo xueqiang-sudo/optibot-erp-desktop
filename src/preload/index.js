@@ -82,6 +82,29 @@ ipcRenderer.on('menu:action', (_event, action) => {
 // ─── Expose API via contextBridge ────────────────────────────────
 contextBridge.exposeInMainWorld('electronAPI', {
   /**
+   * Serial Port API (通用串口)
+   *
+   * Usage:
+   *   const ports = await window.electronAPI.serial.listPorts();
+   */
+  serial: {
+    /**
+     * List all serial ports with full properties
+     * @returns {Promise<Array<{
+     *   path: string,          // 系统路径 (COM3, /dev/ttyUSB0)
+     *   manufacturer: string,  // 制造商
+     *   serialNumber: string,  // 序列号
+     *   pnpId: string,         // PnP ID (Windows)
+     *   locationId: string,    // Location ID (macOS)
+     *   productId: string,     // USB Product ID
+     *   vendorId: string,      // USB Vendor ID
+     *   friendlyName: string,  // 友好名称
+     * }>>}
+     */
+    listPorts: () => ipcRenderer.invoke('serial:list-ports'),
+  },
+
+  /**
    * Electronic Scale API
    *
    * Usage:

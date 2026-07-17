@@ -363,6 +363,27 @@ function registerIPCHandlers() {
     return scaleService.getStatus();
   });
 
+  // ★ List all serial ports with full properties
+  ipcMain.handle('serial:list-ports', async () => {
+    try {
+      const { SerialPort } = require('serialport');
+      const ports = await SerialPort.list();
+      return ports.map((p) => ({
+        path: p.path || '',                          // COM3, /dev/ttyUSB0
+        manufacturer: p.manufacturer || '',           // 制造商
+        serialNumber: p.serialNumber || '',           // 序列号
+        pnpId: p.pnpId || '',                        // PnP ID (Windows)
+        locationId: p.locationId || '',               // Location ID (macOS)
+        productId: p.productId || '',                 // USB Product ID
+        vendorId: p.vendorId || '',                   // USB Vendor ID
+        friendlyName: p.friendlyName || p.path || '', // 友好名称
+      }));
+    } catch (err) {
+      log.error('Failed to list serial ports:', err.message);
+      return [];
+    }
+  });
+
   ipcMain.handle('printer:list', async () => {
     return await printerService.listPrinters();
   });
