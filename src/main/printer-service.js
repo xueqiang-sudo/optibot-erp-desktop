@@ -297,7 +297,8 @@ class PrinterService extends EventEmitter {
     const base64Data = buffer.toString('base64');
 
     // ★ Debug: save TSPL data to application directory for manual testing
-    const appDir = path.resolve(__dirname, '..', '..');
+    // process.execPath = the .exe location (writable), works in both dev and packaged mode
+    const appDir = path.dirname(process.execPath);
     const debugFile = path.join(appDir, 'debug-last-tspl.txt');
     try {
       fs.writeFileSync(debugFile, data, 'utf-8');
