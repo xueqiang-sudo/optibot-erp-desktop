@@ -353,7 +353,6 @@
 
       // ── Helper: calculate font multiplier based on font size ──
       // CHN TTF font: ~24 dots height at mul=1, scales proportionally
-      // For table cells, use conservative sizing to fit within cells
       function chnMulForSize(fontSize) {
         return Math.max(1, Math.round(fontSize / 24));
       }
@@ -365,13 +364,17 @@
         return Math.max(1, Math.round(fontSize / 14));
       }
       // Estimate rendered text width in dots
-      function estimateTextWidth(text, fontSize, isChinese) {
-        if (isChinese) {
-          // CHN TTF: each char ≈ fontSize dots wide at the matching mul
+      // CHN TTF: CJK chars ≈ 24*mul dots, ASCII chars ≈ 12*mul dots
+      // Built-in "1": each char ≈ 8*mulX dots
+      function estimateTextWidth(text, fontSize, useChnFont) {
+        if (useChnFont) {
           const mul = chnMulForSize(fontSize);
-          return text.length * 24 * mul;
+          let w = 0;
+          for (let i = 0; i < text.length; i++) {
+            w += text.charCodeAt(i) > 127 ? 24 * mul : 12 * mul;
+          }
+          return w;
         } else {
-          // Built-in "1": each char ≈ 8 * mulX dots wide
           const mulX = engMulXForSize(fontSize);
           return text.length * 8 * mulX;
         }
@@ -412,6 +415,13 @@
         for (let c = 0; c < columns.length; c++) {
           const key = `${r},${c}`;
           const override = cellOverrides[key];
+
+          // ★ Skip hidden cells
+          if (override && override.hidden) {
+            cellX += colWidthsDots[c];
+            continue;
+          }
+
           const rawContent = override ? override.content || '' : '';
           const content = rawContent.replace(/"/g, '""');
 
@@ -419,7 +429,16 @@
             // ★ Read per-cell font_size from override, fall back to default
             const fontSize = (override && override.font_size) || defaultCellFontSize;
             const align = columns[c].align || 'left';
-            const cellW = colWidthsDots[c];
+
+            // ★ Handle colspan: merge multiple column widths
+            let cellW = colWidthsDots[c];
+            const colspan = (override && override.colspan) || 1;
+            if (colspan > 1) {
+              cellW = 0;
+              for (let ci = c; ci < Math.min(c + colspan, columns.length); ci++) {
+                cellW += colWidthsDots[ci];
+              }
+            }
 
             // Calculate font multipliers for this cell's font size
             const cMul = chnMulForSize(fontSize);
