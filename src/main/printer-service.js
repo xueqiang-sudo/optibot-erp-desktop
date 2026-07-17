@@ -1,24 +1,19 @@
 /**
- * Label Printer Service - Windows Spooler API Raw Printing
+ * Label Printer Service - Windows Spooler API Raw Printing (TSPL)
  *
- * Sends ZPL commands to label printers (e.g., TSC TE344) through the
- * Windows print driver using the Spooler API in RAW mode.
+ * Sends TSPL commands to TSC label printers through the Windows print
+ * driver using the Spooler API in RAW mode.
  *
- * How it works:
- * - The printer must be installed in Windows with its driver (e.g., TSC driver)
- * - We use the Windows Spooler API (OpenPrinter, WritePrinter, etc.) via PowerShell
- * - RAW mode sends ZPL data directly to the printer without driver processing
+ * TSPL is TSC's native printer language, so the TSC Windows driver
+ * passes TSPL data directly to the printer without modification.
  *
- * Chinese font support:
- * - The ^CW font mapping command is included in EVERY print job (same job as label data)
- * - This ensures the font mapping survives the Spooler's job boundaries
- * - Previously (with libusb) the mapping was sent as a separate USB write,
- *   but Windows Spooler may reset printer state between jobs
+ * Chinese text uses fonts stored on the printer's flash drive (e.g., "CHN").
+ * The font is referenced directly by name in TEXT commands — no separate
+ * font mapping step is needed.
  *
  * Encoding:
  * - PowerShell scripts are written to UTF-8 BOM temp files and executed with -File
- * - This avoids command-line encoding issues with Chinese characters
- * - ZPL data is base64-encoded to safely embed in the PowerShell script
+ * - TSPL data is base64-encoded to safely embed in the PowerShell script
  */
 
 const { EventEmitter } = require('events');
@@ -39,9 +34,8 @@ const POLL_INTERVAL = 5000;
 const LIST_TIMEOUT = 10000;
 const PRINT_TIMEOUT = 15000;
 
-// ZPL font mapping command: maps font code 'C' to E:CHN.TTF on printer flash
-// This MUST be included in the same print job as label data for Windows Spooler
-const FONT_MAP_COMMAND = '^XA^CWC,E:CHN.TTF^XZ\n';
+// TSPL does not need a separate font mapping command.
+// Chinese fonts are referenced directly by name (e.g., "CHN") in TEXT commands.
 
 // Temp directory for PowerShell scripts
 const TEMP_DIR = os.tmpdir();
@@ -174,24 +168,12 @@ class PrinterService extends EventEmitter {
   constructor() {
     super();
 
-    this.fontPreloader = null;
     this.knownPrinters = new Map(); // printerName → { name, driverName, portName, ... }
     this.pollTimer = null;
     this.polling = false;
 
-    // Track which printers have font mapping included (for logging)
-    this.fontMapped = new Set();
-
     // Bind methods
     this._pollPrinters = this._pollPrinters.bind(this);
-  }
-
-  /**
-   * Set the font preloader instance
-   * @param {FontPreloader} fontPreloader
-   */
-  setFontPreloader(fontPreloader) {
-    this.fontPreloader = fontPreloader;
   }
 
   /**
@@ -268,38 +250,23 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Send ZPL data to the printer.
+   * Send TSPL data to the printer via Windows Spooler API (RAW mode).
    *
-   * KEY FIX: The ^CW font mapping command is prepended to the label ZPL data
-   * and sent in the SAME Spooler print job. This ensures the Chinese font
-   * mapping is active when the label data is processed.
-   *
-   * With direct USB (libusb), sending ^CW as a separate write worked because
-   * the printer's DRAM persisted the mapping. But the Windows Spooler may
-   * reset printer state between jobs, causing the font mapping to be lost.
+   * TSPL is TSC's native printer language. Chinese fonts are referenced
+   * directly by name (e.g., "CHN") in TEXT commands — no separate font
+   * mapping step is needed.
    *
    * @param {string} printerId - Windows printer name
-   * @param {string} zplData - Complete ZPL string
+   * @param {string} tsplData - Complete TSPL command string
    * @returns {Promise<{success: boolean}>}
    */
-  async printZPL(printerId, zplData) {
-    // ★ Always prepend font mapping to ensure Chinese font is available
-    // This is sent in the same print job as the label data
-    const fullData = FONT_MAP_COMMAND + zplData;
+  async printTSPL(printerId, tsplData) {
+    log.info(`[PrinterService] Printing TSPL to "${printerId}" (${tsplData.length} chars)`);
 
-    log.info(`[PrinterService] Print with embedded font mapping for "${printerId}"`);
-
-    // Mark font as loaded (since we're including it in this job)
-    if (this.fontPreloader) {
-      this.fontPreloader.fontLoaded.set(printerId, true);
-      this.fontPreloader.lastPreloadTime.set(printerId, Date.now());
-    }
-    this.fontMapped.add(printerId);
-
-    // Send the combined data with timeout
+    // Send the TSPL data with timeout
     const timeoutMs = PRINT_TIMEOUT;
     await Promise.race([
-      this.sendRaw(printerId, fullData),
+      this.sendRaw(printerId, tsplData),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
       ),
@@ -325,7 +292,7 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert ZPL string to UTF-8 Buffer, then Base64 for PowerShell
+    // Convert TSPL string to UTF-8 Buffer, then Base64 for PowerShell
     const buffer = Buffer.from(data, 'utf-8');
     const base64Data = buffer.toString('base64');
 
@@ -334,14 +301,14 @@ class PrinterService extends EventEmitter {
     );
 
     // Build the PowerShell script with embedded base64 data
-    const docName = `ZPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    const docName = `TSPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;
     const script = buildRawPrintScript(printerId, base64Data, docName);
 
     // Execute the PowerShell script (using temp file for reliable encoding)
     const result = await this._runPowerShell(script, PRINT_TIMEOUT);
 
     if (result && result.trim() === 'OK') {
-      log.info(`[PrinterService] ZPL data sent successfully to "${printerId}" (${buffer.length} bytes)`);
+      log.info(`[PrinterService] TSPL data sent successfully to "${printerId}" (${buffer.length} bytes)`);
     } else {
       log.warn(`[PrinterService] Print completed with unexpected output: ${result}`);
     }
@@ -367,7 +334,6 @@ class PrinterService extends EventEmitter {
       this.pollTimer = null;
     }
     this.knownPrinters.clear();
-    this.fontMapped.clear();
     this.removeAllListeners();
   }
 
@@ -402,7 +368,6 @@ class PrinterService extends EventEmitter {
         if (!currentNames.has(name)) {
           log.info(`[PrinterService] Printer detached: "${name}"`);
           this.knownPrinters.delete(name);
-          this.fontMapped.delete(name);
           this.emit('printer-detached', name);
         }
       }

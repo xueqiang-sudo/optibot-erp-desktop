@@ -16,7 +16,6 @@ Menu.setApplicationMenu(null);
 
 const ScaleService = require('./scale-service');
 const PrinterService = require('./printer-service');
-const FontPreloader = require('./font-preloader');
 const TrayManager = require('./tray');
 const UpdaterService = require('./updater');
 
@@ -37,7 +36,6 @@ const store = new Store({
 let mainWindow = null;
 let scaleService = null;
 let printerService = null;
-let fontPreloader = null;
 let trayManager = null;
 let updaterService = null;
 let quitDialog = null;
@@ -369,21 +367,12 @@ function registerIPCHandlers() {
     return await printerService.listPrinters();
   });
 
-  ipcMain.handle('printer:print', async (_event, printerId, zplData) => {
-    return await printerService.printZPL(printerId, zplData);
+  ipcMain.handle('printer:print', async (_event, printerId, tsplData) => {
+    return await printerService.printTSPL(printerId, tsplData);
   });
 
   ipcMain.handle('printer:get-status', () => {
     return printerService.getStatus();
-  });
-
-  ipcMain.handle('printer:preload-font', async (_event, printerId) => {
-    await fontPreloader.preloadFont(printerId);
-    return { success: true };
-  });
-
-  ipcMain.handle('printer:is-font-loaded', (_event, printerId) => {
-    return fontPreloader.isFontLoaded(printerId);
   });
 
   ipcMain.handle('app:get-version', () => {
@@ -452,20 +441,8 @@ function initServices() {
     log.error('Printer error:', error);
   });
 
-  fontPreloader = new FontPreloader(printerService);
-  printerService.setFontPreloader(fontPreloader);
-
-  printerService.on('printer-attached', async (printerId) => {
-    try {
-      await fontPreloader.preloadFont(printerId);
-    } catch (err) {
-      log.error('Auto font preload failed:', err);
-    }
-  });
-
-  printerService.on('printer-detached', (printerId) => {
-    fontPreloader.markUnloaded(printerId);
-  });
+  // TSPL does not need font preloading — Chinese fonts are referenced
+  // directly by name (e.g., "CHN") in TEXT commands
 
   printerService.initUSBWatcher();
 
@@ -482,18 +459,6 @@ function initServices() {
       }
     }, 3000);
   }
-
-  // Auto-preload fonts
-  setTimeout(async () => {
-    try {
-      const printers = await printerService.listPrinters();
-      for (const printer of printers) {
-        await fontPreloader.preloadFont(printer.id);
-      }
-    } catch (err) {
-      log.warn('Auto font preload failed:', err.message);
-    }
-  }, 5000);
 
   // Tray manager
   trayManager = new TrayManager(mainWindow);

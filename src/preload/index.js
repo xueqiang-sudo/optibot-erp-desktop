@@ -152,19 +152,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * Label Printer API (TSC TE344 via Windows driver, ZPL commands)
+   * Label Printer API (TSC via Windows driver, TSPL commands)
    *
    * Printers are discovered through the Windows print driver (must be installed in Windows).
-   * Raw ZPL data is sent through the Windows Spooler API.
+   * Raw TSPL data is sent through the Windows Spooler API.
    *
    * Usage:
    *   const printers = await window.electronAPI.printer.listPrinters();
-   *   await window.electronAPI.printer.printZPL(printers[0].id, '^XA...^XZ');
+   *   await window.electronAPI.printer.printTSPL(printers[0].id, 'SIZE 40 mm,30 mm\n...PRINT 1');
    *
-   * ZPL with Chinese text (font code C must be pre-loaded):
-   *   ^XA
-   *   ^FO50,50^ACN,30,30^FD品名：蓝牙耳机^FS
-   *   ^XZ
+   * TSPL with Chinese text (uses CHN font on printer flash):
+   *   SIZE 40 mm,30 mm
+   *   GAP 2 mm,0
+   *   DIRECTION 1
+   *   CODEPAGE UTF-8
+   *   CLS
+   *   TEXT 100,100,"CHN",0,1,1,"品名：蓝牙耳机"
+   *   PRINT 1
    */
   printer: {
     /**
@@ -174,35 +178,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listPrinters: () => ipcRenderer.invoke('printer:list'),
 
     /**
-     * Send ZPL data to printer (auto-checks font preload status)
+     * Send TSPL data to printer via Windows Spooler (RAW mode)
      * @param {string} printerId - Windows printer name from listPrinters()
-     * @param {string} zplData - Complete ZPL string (e.g., '^XA...^XZ')
+     * @param {string} tsplData - Complete TSPL command string
      * @returns {Promise<{success: boolean}>}
      */
-    printZPL: (printerId, zplData) =>
-      ipcRenderer.invoke('printer:print', printerId, zplData),
+    printTSPL: (printerId, tsplData) =>
+      ipcRenderer.invoke('printer:print', printerId, tsplData),
 
     /**
      * Get printer status
      * @returns {Promise<{connected: boolean, printers: Array}>}
      */
     getStatus: () => ipcRenderer.invoke('printer:get-status'),
-
-    /**
-     * Manually trigger font preload (^CW command)
-     * @param {string} printerId - Windows printer name
-     * @returns {Promise<{success: boolean}>}
-     */
-    preloadFont: (printerId) =>
-      ipcRenderer.invoke('printer:preload-font', printerId),
-
-    /**
-     * Check if Chinese font is loaded for a printer
-     * @param {string} printerId - Windows printer name
-     * @returns {Promise<boolean>}
-     */
-    isFontLoaded: (printerId) =>
-      ipcRenderer.invoke('printer:is-font-loaded', printerId),
 
     /**
      * Register callback for printer status changes
