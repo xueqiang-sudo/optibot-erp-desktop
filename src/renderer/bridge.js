@@ -125,9 +125,9 @@
     // ─── Printer Management ─────────────────────────────────────
 
     /**
-     * List all available USB printers and refresh the internal list.
+     * List all available Windows printers and refresh the internal list.
      * If a default printer was previously set and is still online, it is kept.
-     * @returns {Promise<Array<{id: string, name: string, manufacturer: string, product: string, serialNumber: string, port: string, vid: string, pid: string}>>}
+     * @returns {Promise<Array<{id: string, name: string, driverName: string, port: string}>>}
      */
     async listPrinters() {
       this.printers = await window.electronAPI.printer.listPrinters();
@@ -147,16 +147,8 @@
         }
       }
 
-      // Fetch all USB devices for diagnostic dialog
-      let allUsbDevices = [];
-      try {
-        allUsbDevices = await window.electronAPI.printer.listAllUSBDevices();
-      } catch (e) {
-        console.warn('[OptiBot Bridge] Failed to list USB devices:', e);
-      }
-
-      // Show debug dialog with printer list + all USB devices
-      this._showPrinterDialog(this.printers, allUsbDevices);
+      // Show debug dialog with printer list
+      this._showPrinterDialog(this.printers);
 
       return this.printers;
     },
@@ -730,7 +722,7 @@
       const printerInfo = printer
         ? `<div style="margin:8px 0;padding:10px;background:#f5f5f5;border-radius:6px;font-size:13px;">
             <div><b>打印机：</b>${printer.name || '-'}</div>
-            <div><b>ID：</b><span style="font-family:monospace;color:#1a73e8;">${printer.id}</span></div>
+            <div><b>驱动：</b>${printer.driverName || '-'}</div>
             <div><b>端口：</b>${printer.port || '-'}</div>
            </div>`
         : '<div style="color:#999;margin:8px 0;">无打印机信息</div>';
@@ -828,12 +820,11 @@
     },
 
     /**
-     * Show a dialog listing discovered printers + all USB devices (for debugging)
-     * @param {Array} printers - Matched printers
-     * @param {Array} allUsbDevices - All USB devices for diagnostics
+     * Show a dialog listing discovered Windows printers
+     * @param {Array} printers - Installed printers
      * @private
      */
-    _showPrinterDialog(printers, allUsbDevices) {
+    _showPrinterDialog(printers) {
       // Remove existing dialog if any
       const existing = document.getElementById('optibot-printer-dialog');
       if (existing) existing.remove();
@@ -848,70 +839,26 @@
       if (printers.length === 0) {
         printerHtml =
           '<div style="color:#e74c3c;font-size:15px;padding:16px;text-align:center;">' +
-          '❌ 未检测到打印机</div>';
+          '❌ 未检测到打印机<br>' +
+          '<span style="font-size:12px;color:#999;margin-top:8px;display:block;">请确保打印机驱动已安装并在 Windows 中添加了打印机</span>' +
+          '</div>';
       } else {
         printerHtml =
           '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
           '<thead><tr style="background:#e8f5e9;">' +
           '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">名称</th>' +
-          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">ID</th>' +
-          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">制造商</th>' +
+          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">驱动</th>' +
           '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">端口</th>' +
           '</tr></thead><tbody>';
         printers.forEach((p, i) => {
           printerHtml +=
             `<tr style="background:${i % 2 === 0 ? '#fff' : '#f9f9f9'};">` +
             `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:bold;">${p.name || '-'}</td>` +
-            `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-family:monospace;color:#1a73e8;">${p.id}</td>` +
-            `<td style="padding:6px 10px;border-bottom:1px solid #eee;">${p.manufacturer || '-'}</td>` +
+            `<td style="padding:6px 10px;border-bottom:1px solid #eee;">${p.driverName || '-'}</td>` +
             `<td style="padding:6px 10px;border-bottom:1px solid #eee;">${p.port || '-'}</td>` +
             '</tr>';
         });
         printerHtml += '</tbody></table>';
-      }
-
-      // All USB devices section (collapsible)
-      let usbHtml = '';
-      if (allUsbDevices && allUsbDevices.length > 0) {
-        usbHtml =
-          '<details style="margin-top:12px;">' +
-          `<summary style="cursor:pointer;font-weight:bold;font-size:14px;color:#666;padding:8px 0;">` +
-          `🔌 所有 USB 设备 (${allUsbDevices.length} 个) — 点击展开</summary>` +
-          '<div style="max-height:250px;overflow-y:auto;margin-top:8px;">' +
-          '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
-          '<thead><tr style="background:#e3f2fd;">' +
-          '<th style="padding:5px 8px;text-align:left;border-bottom:1px solid #90caf9;">VID:PID</th>' +
-          '<th style="padding:5px 8px;text-align:left;border-bottom:1px solid #90caf9;">设备类</th>' +
-          '<th style="padding:5px 8px;text-align:left;border-bottom:1px solid #90caf9;">接口</th>' +
-          '<th style="padding:5px 8px;text-align:left;border-bottom:1px solid #90caf9;">Bus/Addr</th>' +
-          '</tr></thead><tbody>';
-        allUsbDevices.forEach((d, i) => {
-          if (d.error) {
-            usbHtml += `<tr><td colspan="4" style="padding:5px 8px;color:#e74c3c;">${d.error}</td></tr>`;
-            return;
-          }
-          const ifaceStr = Array.isArray(d.interfaces)
-            ? d.interfaces
-                .map((iface) =>
-                  Array.isArray(iface)
-                    ? iface.map((a) => a.class || a.error || '?').join(',')
-                    : iface.class || iface.error || '?'
-                )
-                .join('; ')
-            : '-';
-          const isPrinterClass = ifaceStr.includes('0x7');
-          usbHtml +=
-            `<tr style="background:${isPrinterClass ? '#fff3e0' : i % 2 === 0 ? '#fff' : '#f9f9f9'};">` +
-            `<td style="padding:5px 8px;border-bottom:1px solid #eee;font-family:monospace;font-weight:bold;">${d.id}</td>` +
-            `<td style="padding:5px 8px;border-bottom:1px solid #eee;font-family:monospace;">${d.deviceClass}</td>` +
-            `<td style="padding:5px 8px;border-bottom:1px solid #eee;font-family:monospace;font-size:11px;">${ifaceStr}</td>` +
-            `<td style="padding:5px 8px;border-bottom:1px solid #eee;">${d.busNumber}/${d.deviceAddress}</td>` +
-            '</tr>';
-        });
-        usbHtml += '</tbody></table></div></details>';
-      } else {
-        usbHtml =
-          '<div style="color:#999;font-size:13px;padding:8px;">无 USB 设备信息</div>';
       }
 
       overlay.innerHTML = `
@@ -919,8 +866,8 @@
           background:#fff;
           border-radius:12px;
           padding:0;
-          min-width:550px;
-          max-width:750px;
+          min-width:500px;
+          max-width:650px;
           box-shadow:0 8px 32px rgba(0,0,0,0.3);
           font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
           overflow:hidden;
@@ -935,7 +882,7 @@
             justify-content:space-between;
             align-items:center;
           ">
-            <span>🖨️ 打印机诊断 (${printers.length} 台打印机 / ${allUsbDevices ? allUsbDevices.length : 0} 个USB设备)</span>
+            <span>🖨️ Windows 打印机 (${printers.length} 台)</span>
             <button id="optibot-printer-dialog-close" style="
               background:rgba(255,255,255,0.2);
               border:none;
@@ -952,10 +899,13 @@
           </div>
           <div style="padding:16px 24px;max-height:500px;overflow-y:auto;">
             <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">
-              ✅ 识别到的打印机
+              ✅ 已安装的打印机 (通过 Windows 驱动原始打印)
             </div>
             ${printerHtml}
-            ${usbHtml}
+            <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
+              <b>提示：</b>打印机需要在 Windows 中安装驱动并添加后才能使用。
+              ZPL 指令通过 Windows Spooler 以 RAW 模式直接发送到打印机。
+            </div>
           </div>
           <div style="
             padding:12px 24px;

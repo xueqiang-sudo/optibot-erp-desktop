@@ -12,15 +12,14 @@
     "build": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:all": "electron-builder --win --mac",
-    "rebuild": "npx @electron/rebuild -f -w serialport,usb",
+    "rebuild": "npx @electron/rebuild -f -w serialport",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "electron-log": "^5.1.1",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.1.7",
-    "serialport": "^12.0.0",
-    "usb": "^2.11.0"
+    "serialport": "^12.0.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",

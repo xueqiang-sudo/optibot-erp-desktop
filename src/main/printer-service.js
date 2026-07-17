@@ -1,39 +1,175 @@
 /**
- * Label Printer Service - TSC TE344 USB Communication
+ * Label Printer Service - Windows Spooler API Raw Printing
  *
- * Sends ZPL commands to the TSC TE344 label printer via USB.
- * Handles USB device enumeration, hot-plug detection, and raw data transfer.
+ * Sends ZPL commands to label printers (e.g., TSC TE344) through the
+ * Windows print driver using the Spooler API in RAW mode.
+ *
+ * How it works:
+ * - The printer must be installed in Windows with its driver (e.g., TSC driver)
+ * - We use the Windows Spooler API (OpenPrinter, WritePrinter, etc.) via PowerShell
+ * - RAW mode sends ZPL data directly to the printer without driver processing
+ * - This is more reliable than direct USB access (libusb) because:
+ *   - Windows manages the USB communication through the driver
+ *   - No need to claim USB interfaces or find endpoints
+ *   - Works with shared printers, network printers, etc.
+ *   - No conflicts with other applications using the printer
  *
  * Important:
- * - ZPL strings are sent as UTF-8 encoded buffers to support Chinese text
+ * - ZPL strings are sent as UTF-8 encoded data to support Chinese text
  * - Font code 'C' must be pre-loaded via FontPreloader before using ^AC in ZPL
- * - USB bulk transfer endpoint is used for data output
+ * - Printer ID is the Windows printer name (e.g., "TSC TE344")
  */
 
 const { EventEmitter } = require('events');
-const usb = require('usb');
+const { execFile } = require('child_process');
 const log = require('electron-log');
 
-// Known TSC printer USB Vendor/Product IDs
-// TSC Auto ID Technology Co., Ltd VID: 0x1203
-const TSC_USB_IDENTIFIERS = [
-  { vid: 0x1203, pid: 0x0272, name: 'TSC TE344' },
-];
+// PowerShell path (available on all modern Windows systems)
+const POWERSHELL = 'powershell.exe';
+const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
 
-// USB device class for printers
-const USB_CLASS_PRINTER = 0x07;
+// Polling interval for printer change detection (ms)
+const POLL_INTERVAL = 5000;
+
+// Timeout for PowerShell commands (ms)
+const LIST_TIMEOUT = 10000;
+const PRINT_TIMEOUT = 15000;
+
+/**
+ * PowerShell script to list installed printers.
+ * Uses Get-Printer cmdlet (available since Windows 8 / Server 2012).
+ * Returns JSON array of printer objects.
+ */
+const PS_LIST_PRINTERS = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $printers = Get-Printer | Select-Object Name, DriverName, PortName, Shared, PrinterStatus
+    $printers | ConvertTo-Json -Compress
+} catch {
+    '[]'
+}
+`.trim();
+
+/**
+ * Build a PowerShell script that sends raw data to a printer
+ * via the Windows Spooler API (P/Invoke).
+ *
+ * The script:
+ * 1. Defines P/Invoke signatures for winspool.drv functions
+ * 2. Decodes base64-encoded raw data
+ * 3. Opens the printer, starts a RAW doc, writes data, ends doc, closes printer
+ *
+ * @param {string} printerName - Windows printer name
+ * @param {string} base64Data - Base64-encoded UTF-8 ZPL data
+ * @param {string} docName - Document name for the print spooler
+ * @returns {string} PowerShell script
+ */
+function buildRawPrintScript(printerName, base64Data, docName) {
+  // Escape single quotes in printer name and doc name for PowerShell
+  const escapedName = printerName.replace(/'/g, "''");
+  const escapedDoc = docName.replace(/'/g, "''");
+
+  return `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# ── Define Windows Spooler API via P/Invoke ──
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DOC_INFO_1 {
+    [MarshalAs(UnmanagedType.LPWStr)] public string pDocName;
+    [MarshalAs(UnmanagedType.LPWStr)] public string pOutputFile;
+    [MarshalAs(UnmanagedType.LPWStr)] public string pDatatype;
+}
+
+public static class Winspool {
+    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool OpenPrinterW(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool ClosePrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool StartDocPrinterW(IntPtr hPrinter, int Level, ref DOC_INFO_1 pDocInfo);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool EndDocPrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", SetLastError = true)]
+    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);
+}
+"@
+
+# ── Decode base64 data to bytes ──
+$bytes = [System.Convert]::FromBase64String('${base64Data}')
+
+# ── Open the printer ──
+$printerName = '${escapedName}'
+$handle = [IntPtr]::Zero
+
+if (-not [Winspool]::OpenPrinterW($printerName, [ref]$handle, [IntPtr]::Zero)) {
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "OpenPrinterW failed for '$printerName' (error code: $err)"
+}
+
+try {
+    # ── Start a RAW print job ──
+    $docInfo = New-Object DOC_INFO_1
+    $docInfo.pDocName = '${escapedDoc}'
+    $docInfo.pOutputFile = $null
+    $docInfo.pDatatype = 'RAW'
+
+    if (-not [Winspool]::StartDocPrinterW($handle, 1, [ref]$docInfo)) {
+        $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "StartDocPrinterW failed (error code: $err)"
+    }
+
+    try {
+        # ── Write raw data to the printer ──
+        $written = 0
+        if (-not [Winspool]::WritePrinter($handle, $bytes, $bytes.Length, [ref]$written)) {
+            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "WritePrinter failed (error code: $err)"
+        }
+
+        if ($written -ne $bytes.Length) {
+            throw "WritePrinter: only $written of $($bytes.Length) bytes written"
+        }
+
+        # ── End the print job ──
+        if (-not [Winspool]::EndDocPrinter($handle)) {
+            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "EndDocPrinter failed (error code: $err)"
+        }
+
+        Write-Output "OK"
+    }
+    catch {
+        [Winspool]::EndDocPrinter($handle) | Out-Null
+        throw
+    }
+}
+finally {
+    [Winspool]::ClosePrinter($handle) | Out-Null
+}
+`.trim();
+}
 
 class PrinterService extends EventEmitter {
   constructor() {
     super();
 
     this.fontPreloader = null;
-    this.knownPrinters = new Map(); // deviceId → { vid, pid, name, serialNumber }
-    this.usbWatcherActive = false;
+    this.knownPrinters = new Map(); // printerName → { name, driverName, portName, ... }
+    this.pollTimer = null;
+    this.polling = false;
 
     // Bind methods
-    this._onUSBAttach = this._onUSBAttach.bind(this);
-    this._onUSBDetach = this._onUSBDetach.bind(this);
+    this._pollPrinters = this._pollPrinters.bind(this);
   }
 
   /**
@@ -45,114 +181,141 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Initialize USB hot-plug watcher
+   * Initialize periodic polling for printer change detection.
+   * Replaces the USB hot-plug watcher used in the old libusb-based implementation.
    */
   initUSBWatcher() {
-    if (this.usbWatcherActive) return;
+    if (this.pollTimer) return;
 
-    usb.on('attach', this._onUSBAttach);
-    usb.on('detach', this._onUSBDetach);
-    this.usbWatcherActive = true;
-    log.info('USB watcher initialized');
+    log.info('[PrinterService] Starting printer polling (interval: %dms)', POLL_INTERVAL);
+    // Do an initial scan
+    this._pollPrinters();
+    // Set up periodic polling
+    this.pollTimer = setInterval(this._pollPrinters, POLL_INTERVAL);
   }
 
   /**
-   * List available USB printers
-   * Scans ALL USB devices using multiple detection strategies.
-   * @returns {Promise<Array<{id: string, name: string, manufacturer: string, serialNumber: string, port: string, vid: string, pid: string}>>}
+   * List available printers installed in Windows.
+   * @returns {Promise<Array<{id: string, name: string, manufacturer: string, product: string, serialNumber: string, port: string, driverName: string}>>}
    */
   async listPrinters() {
-    const printers = [];
-
     try {
-      const devices = usb.getDeviceList();
-      log.info(`USB device scan: found ${devices.length} total devices`);
+      const output = await this._runPowerShell(PS_LIST_PRINTERS, LIST_TIMEOUT);
+      let printers;
 
-      for (const device of devices) {
-        const desc = device.deviceDescriptor;
-        if (!desc) continue;
-
-        const vid = desc.idVendor.toString(16).padStart(4, '0');
-        const pid = desc.idProduct.toString(16).padStart(4, '0');
-        const isPrinter = this._isPrinterDevice(device);
-
-        log.info(
-          `  USB ${vid}:${pid} class=0x${desc.bDeviceClass.toString(16)} ` +
-          `subclass=0x${desc.bDeviceSubClass?.toString(16) || '00'} ` +
-          `protocol=0x${desc.bDeviceProtocol?.toString(16) || '00'} ` +
-          `→ ${isPrinter ? '✅ PRINTER' : 'skip'}`
-        );
-
-        if (isPrinter) {
-          try {
-            const info = await this._getDeviceInfo(device);
-            printers.push(info);
-            log.info(`  → Printer: ${info.name} (${info.id}) [${info.port}]`);
-            // Cache known printer
-            this.knownPrinters.set(info.id, {
-              vid: info.vid,
-              pid: info.pid,
-              name: info.name,
-              device: device,
-            });
-          } catch (infoErr) {
-            log.warn(`  → Failed to read device info for ${vid}:${pid}:`, infoErr.message);
-          }
+      if (!output || output.trim() === '' || output.trim() === '[]') {
+        printers = [];
+      } else {
+        try {
+          const parsed = JSON.parse(output);
+          // PowerShell returns a single object if there's only one printer
+          printers = Array.isArray(parsed) ? parsed : [parsed];
+        } catch (parseErr) {
+          log.warn('[PrinterService] Failed to parse printer list:', parseErr.message);
+          printers = [];
         }
       }
 
-      log.info(`Printer scan complete: ${printers.length} printer(s) found`);
-    } catch (err) {
-      log.error('Failed to enumerate USB printers:', err.message);
-    }
+      log.info(`[PrinterService] Found ${printers.length} printer(s) in Windows`);
 
-    return printers;
+      const result = [];
+      this.knownPrinters.clear();
+
+      for (const p of printers) {
+        const name = p.Name || '';
+        if (!name) continue;
+
+        const info = {
+          id: name,                         // Use Windows printer name as ID
+          name: name,
+          manufacturer: '',                 // Not directly available from Get-Printer
+          product: '',
+          serialNumber: '',
+          port: p.PortName || '',
+          driverName: p.DriverName || '',
+          shared: p.Shared || false,
+          status: p.PrinterStatus,
+        };
+
+        result.push(info);
+        this.knownPrinters.set(name, info);
+
+        log.info(
+          `  → Printer: "${name}" [Driver: ${info.driverName}] [Port: ${info.port}]`
+        );
+      }
+
+      log.info(`[PrinterService] Printer scan complete: ${result.length} printer(s)`);
+      return result;
+    } catch (err) {
+      log.error('[PrinterService] Failed to list printers:', err.message);
+      return [];
+    }
   }
 
   /**
-   * Send ZPL data to the printer (with automatic font preload check)
-   * @param {string} printerId - Printer identifier (vid:pid format)
+   * Send ZPL data to the printer (with automatic font preload check).
+   * Uses the Windows Spooler API to send raw data through the printer driver.
+   *
+   * @param {string} printerId - Windows printer name
    * @param {string} zplData - Complete ZPL string
    * @returns {Promise<{success: boolean}>}
    */
   async printZPL(printerId, zplData) {
     // Auto-preload font if not loaded
     if (this.fontPreloader && !this.fontPreloader.isFontLoaded(printerId)) {
-      log.info(`Font not loaded for ${printerId}, preloading...`);
+      log.info(`[PrinterService] Font not loaded for "${printerId}", preloading...`);
       try {
         await this.fontPreloader.preloadFont(printerId);
       } catch (fontErr) {
-        log.warn(`Font preload failed for ${printerId}: ${fontErr.message}, continuing with print...`);
+        log.warn(`[PrinterService] Font preload failed for "${printerId}": ${fontErr.message}, continuing with print...`);
       }
     }
 
-    // Send the ZPL data with timeout (8 seconds)
-    const timeoutMs = 8000;
+    // Send the raw ZPL data with timeout
+    const timeoutMs = PRINT_TIMEOUT;
     await Promise.race([
       this.sendRaw(printerId, zplData),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`USB写入超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
+        setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
       ),
     ]);
     return { success: true };
   }
 
   /**
-   * Send raw data to the printer via USB
-   * @param {string} printerId - Printer identifier (vid:pid format)
-   * @param {string} data - Data string to send
+   * Send raw data to the printer via Windows Spooler API.
+   * The data is sent in RAW mode — no processing by the printer driver.
+   *
+   * @param {string} printerId - Windows printer name
+   * @param {string} data - Data string to send (ZPL commands)
    * @returns {Promise<void>}
    */
   async sendRaw(printerId, data) {
-    const device = this._findDevice(printerId);
-    if (!device) {
-      throw new Error(`Printer not found: ${printerId}`);
+    if (!printerId) {
+      throw new Error('Printer name is required');
     }
 
-    // ★ Convert to UTF-8 Buffer (critical for Chinese text)
+    // Convert ZPL string to UTF-8 Buffer, then Base64 for PowerShell
     const buffer = Buffer.from(data, 'utf-8');
+    const base64Data = buffer.toString('base64');
 
-    return this._writeToDevice(device, buffer);
+    log.info(
+      `[PrinterService] Sending raw data to "${printerId}" (${buffer.length} bytes, ${data.length} chars)`
+    );
+
+    // Build the PowerShell script with embedded data
+    const docName = `ZPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    const script = buildRawPrintScript(printerId, base64Data, docName);
+
+    // Execute the PowerShell script
+    const result = await this._runPowerShell(script, PRINT_TIMEOUT);
+
+    if (result && result.trim() === 'OK') {
+      log.info(`[PrinterService] ZPL data sent successfully to "${printerId}" (${buffer.length} bytes)`);
+    } else {
+      log.warn(`[PrinterService] Print completed with unexpected output: ${result}`);
+    }
   }
 
   /**
@@ -170,10 +333,9 @@ class PrinterService extends EventEmitter {
    * Clean up resources
    */
   destroy() {
-    if (this.usbWatcherActive) {
-      usb.removeListener('attach', this._onUSBAttach);
-      usb.removeListener('detach', this._onUSBDetach);
-      this.usbWatcherActive = false;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
     this.knownPrinters.clear();
     this.removeAllListeners();
@@ -182,350 +344,116 @@ class PrinterService extends EventEmitter {
   // ─── Private Methods ─────────────────────────────────────────
 
   /**
-   * Check if a USB device is a printer.
-   * Uses multiple detection strategies:
-   *  1. Known VID/PID list
-   *  2. Device-level bDeviceClass === 0x07
-   *  3. Interface-level bInterfaceClass === 0x07
-   *  4. Config descriptor interface class check (without open/close)
-   * @param {usb.Device} device
-   * @returns {boolean}
+   * Poll for printer changes by re-scanning installed printers.
+   * Emits 'printer-attached' and 'printer-detached' events when changes are detected.
    * @private
    */
-  _isPrinterDevice(device) {
-    const desc = device.deviceDescriptor;
-    if (!desc) return false;
+  async _pollPrinters() {
+    if (this.polling) return; // Skip if previous poll is still running
+    this.polling = true;
 
-    // Strategy 1: Check against known TSC identifiers
-    for (const known of TSC_USB_IDENTIFIERS) {
-      if (desc.idVendor === known.vid && desc.idProduct === known.pid) {
-        return true;
-      }
-    }
-
-    // Strategy 2: Device-level USB printer class (0x07)
-    if (desc.bDeviceClass === USB_CLASS_PRINTER) {
-      return true;
-    }
-
-    // Strategy 3: Check interface-level printer class by opening the device
     try {
-      if (this._hasPrinterInterface(device)) {
-        return true;
-      }
-    } catch (err) {
-      // Strategy 4: Some devices expose configDescriptor without opening
-      try {
-        const configDesc = device.configDescriptor;
-        if (configDesc && configDesc.interfaces) {
-          for (const iface of configDesc.interfaces) {
-            for (const alt of iface) {
-              if (alt.bInterfaceClass === USB_CLASS_PRINTER) {
-                return true;
-              }
-            }
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
+      const currentPrinters = await this._scanPrinters();
+      const currentNames = new Set(currentPrinters.map((p) => p.name));
+      const previousNames = new Set(this.knownPrinters.keys());
 
-    return false;
-  }
-
-  /**
-   * Check if device has a printer interface
-   * @param {usb.Device} device
-   * @returns {boolean}
-   * @private
-   */
-  _hasPrinterInterface(device) {
-    let opened = false;
-    try {
-      device.open();
-      opened = true;
-      const configDesc = device.configDescriptor;
-
-      if (configDesc && configDesc.interfaces) {
-        for (const iface of configDesc.interfaces) {
-          for (const alt of iface) {
-            if (alt.bInterfaceClass === USB_CLASS_PRINTER) {
-              if (opened) device.close();
-              return true;
-            }
-          }
+      // Detect newly attached printers
+      for (const name of currentNames) {
+        if (!previousNames.has(name)) {
+          const info = currentPrinters.find((p) => p.name === name);
+          log.info(`[PrinterService] Printer attached: "${name}"`);
+          this.knownPrinters.set(name, info);
+          this.emit('printer-attached', name);
         }
       }
 
-      if (opened) device.close();
-    } catch (err) {
-      log.debug(`_hasPrinterInterface: could not open device: ${err.message}`);
-      try { if (opened) device.close(); } catch (e) { /* ignore */ }
-    }
-    return false;
-  }
-
-  /**
-   * Get device information (reads USB descriptors for real name/port)
-   * @param {usb.Device} device
-   * @returns {Promise<Object>}
-   * @private
-   */
-  async _getDeviceInfo(device) {
-    const desc = device.deviceDescriptor;
-    const vid = desc.idVendor.toString(16).padStart(4, '0');
-    const pid = desc.idProduct.toString(16).padStart(4, '0');
-
-    let manufacturer = '';
-    let product = '';
-    let serialNumber = '';
-
-    // Read USB string descriptors for real device info
-    try {
-      device.open();
-      if (desc.iManufacturer) {
-        manufacturer = await device.getStringDescriptor(desc.iManufacturer);
-      }
-      if (desc.iProduct) {
-        product = await device.getStringDescriptor(desc.iProduct);
-      }
-      if (desc.iSerialNumber) {
-        serialNumber = await device.getStringDescriptor(desc.iSerialNumber);
-      }
-      device.close();
-    } catch (err) {
-      // Device may be busy or permissions issue, use defaults
-      try { device.close(); } catch (e) { /* ignore */ }
-      log.warn(`Failed to read USB descriptors for ${vid}:${pid}:`, err.message);
-    }
-
-    // USB port path: busNumber + deviceAddress
-    const port = `USB Bus ${device.busNumber} Device ${device.deviceAddress}`;
-
-    // Build display name: prefer USB product string > known list > fallback
-    let name = product || '';
-    if (!name) {
-      for (const known of TSC_USB_IDENTIFIERS) {
-        if (desc.idVendor === known.vid && desc.idProduct === known.pid) {
-          name = known.name;
-          break;
+      // Detect detached printers
+      for (const name of previousNames) {
+        if (!currentNames.has(name)) {
+          log.info(`[PrinterService] Printer detached: "${name}"`);
+          this.knownPrinters.delete(name);
+          this.emit('printer-detached', name);
         }
       }
-    }
-    if (!name) {
-      name = `USB Printer (${vid}:${pid})`;
-    }
 
-    return {
-      id: `${vid}:${pid}`,
-      name: name,
-      manufacturer: manufacturer,
-      product: product,
-      serialNumber: serialNumber,
-      port: port,
-      vid: `0x${vid}`,
-      pid: `0x${pid}`,
-    };
-  }
-
-  /**
-   * Find a USB device by printer ID (vid:pid)
-   * @param {string} printerId
-   * @returns {usb.Device|null}
-   * @private
-   */
-  _findDevice(printerId) {
-    const [vidStr, pidStr] = printerId.split(':');
-    const vid = parseInt(vidStr, 16);
-    const pid = parseInt(pidStr, 16);
-
-    const devices = usb.getDeviceList();
-    for (const device of devices) {
-      const desc = device.deviceDescriptor;
-      if (desc && desc.idVendor === vid && desc.idProduct === pid) {
-        return device;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Write data to a USB printer device
-   * @param {usb.Device} device
-   * @param {Buffer} data
-   * @returns {Promise<void>}
-   * @private
-   */
-  _writeToDevice(device, data) {
-    return new Promise((resolve, reject) => {
-      const desc = device.deviceDescriptor;
-      const vid = desc
-        ? desc.idVendor.toString(16).padStart(4, '0')
-        : '????';
-      const pid = desc
-        ? desc.idProduct.toString(16).padStart(4, '0')
-        : '????';
-
-      log.info(`[USB] Opening device ${vid}:${pid} for write (${data.length} bytes)...`);
-
-      try {
-        device.open();
-      } catch (openErr) {
-        log.error(`[USB] Failed to open device ${vid}:${pid}: ${openErr.message}`);
-        reject(
-          new Error(
-            `无法打开 USB 设备 ${vid}:${pid}: ${openErr.message}。` +
-            `可能需要管理员权限或配置 udev 规则。`
-          )
-        );
-        return;
-      }
-
-      try {
-        const configDesc = device.configDescriptor;
-        if (!configDesc) {
-          device.close();
-          reject(new Error('No USB configuration descriptor'));
-          return;
-        }
-
-        // Find the printer interface and OUT endpoint
-        let interfaceNum = -1;
-        let outEndpoint = null;
-
-        for (let i = 0; i < configDesc.interfaces.length; i++) {
-          const iface = configDesc.interfaces[i];
-          for (const alt of iface) {
-            if (alt.bInterfaceClass === USB_CLASS_PRINTER) {
-              interfaceNum = i;
-              // Find the OUT endpoint (direction: out, type: bulk)
-              for (const ep of alt.endpoints) {
-                if (ep.direction === 'out' && ep.transferType === 2) {
-                  outEndpoint = ep;
-                  break;
-                }
-              }
-              break;
-            }
-          }
-          if (interfaceNum >= 0) break;
-        }
-
-        if (interfaceNum < 0) {
-          device.close();
-          reject(new Error('No printer interface found'));
-          return;
-        }
-
-        if (!outEndpoint) {
-          device.close();
-          reject(new Error('No OUT endpoint found'));
-          return;
-        }
-
-        // Claim the interface
-        const iface = device.interface(interfaceNum);
-
-        // Detach kernel driver if needed (Linux)
-        try {
-          if (iface.isKernelDriverActive()) {
-            log.info(`[USB] Detaching kernel driver on interface ${interfaceNum}`);
-            iface.detachKernelDriver();
-          }
-        } catch (e) {
-          // Windows doesn't support kernel driver operations, ignore
-        }
-
-        log.info(`[USB] Claiming interface ${interfaceNum}...`);
-        iface.claim();
-
-        // Get the endpoint
-        const endpoint = iface.endpoint(outEndpoint.bEndpointAddress);
-
-        log.info(`[USB] Transferring ${data.length} bytes to endpoint...`);
-        // Transfer data
-        endpoint.transfer(data, (err) => {
-          try {
-            iface.release(() => {
-              device.close();
-              if (err) {
-                reject(new Error(`USB transfer failed: ${err.message}`));
-              } else {
-                log.info(`ZPL data sent successfully (${data.length} bytes)`);
-                resolve();
-              }
-            });
-          } catch (releaseErr) {
-            device.close();
-            if (err) {
-              reject(new Error(`USB transfer failed: ${err.message}`));
-            } else {
-              resolve();
-            }
-          }
+      // Emit status if changed
+      if (currentNames.size !== previousNames.size ||
+          [...currentNames].some((n) => !previousNames.has(n))) {
+        this.emit('status', {
+          connected: this.knownPrinters.size > 0,
+          printers: Array.from(this.knownPrinters.keys()),
         });
-      } catch (err) {
-        try {
-          device.close();
-        } catch (e) {
-          // ignore close error
-        }
-        reject(new Error(`USB write error: ${err.message}`));
       }
-    });
+    } catch (err) {
+      log.debug('[PrinterService] Poll error:', err.message);
+    } finally {
+      this.polling = false;
+    }
   }
 
   /**
-   * Handle USB device attach
-   * @param {usb.Device} device
+   * Quick scan of installed printers (without updating knownPrinters map).
+   * @returns {Promise<Array<{name: string, driverName: string, port: string}>>}
    * @private
    */
-  async _onUSBAttach(device) {
-    const desc = device.deviceDescriptor;
-    if (!desc) return;
+  async _scanPrinters() {
+    try {
+      const output = await this._runPowerShell(PS_LIST_PRINTERS, LIST_TIMEOUT);
+      if (!output || output.trim() === '' || output.trim() === '[]') {
+        return [];
+      }
+      const parsed = JSON.parse(output);
+      const printers = Array.isArray(parsed) ? parsed : [parsed];
+      return printers
+        .filter((p) => p.Name)
+        .map((p) => ({
+          name: p.Name,
+          driverName: p.DriverName || '',
+          port: p.PortName || '',
+          shared: p.Shared || false,
+          status: p.PrinterStatus,
+        }));
+    } catch (err) {
+      log.debug('[PrinterService] Scan error:', err.message);
+      return [];
+    }
+  }
 
-    // Check if this is a known TSC printer or a printer-class device
-    const isKnown = TSC_USB_IDENTIFIERS.some(
-      (k) => desc.idVendor === k.vid && desc.idProduct === k.pid
-    );
+  /**
+   * Run a PowerShell script and return stdout.
+   *
+   * @param {string} script - PowerShell script to execute
+   * @param {number} timeout - Timeout in milliseconds
+   * @returns {Promise<string>} stdout output
+   * @private
+   */
+  _runPowerShell(script, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      const args = [...POWERSHELL_ARGS, '-Command', script];
 
-    if (isKnown || desc.bDeviceClass === USB_CLASS_PRINTER) {
-      const info = await this._getDeviceInfo(device);
-      log.info(`USB printer attached: ${info.name} (${info.id}) [${info.port}]`);
-      this.knownPrinters.set(info.id, {
-        vid: info.vid,
-        pid: info.pid,
-        name: info.name,
-        device: device,
+      const child = execFile(POWERSHELL, args, {
+        timeout,
+        maxBuffer: 1024 * 1024,  // 1MB buffer
+        windowsHide: true,
+        encoding: 'utf-8',
+      }, (error, stdout, stderr) => {
+        if (error) {
+          if (error.killed) {
+            reject(new Error(`PowerShell 命令执行超时 (${timeout / 1000}秒)`));
+          } else {
+            const errMsg = stderr ? stderr.trim() : error.message;
+            reject(new Error(`PowerShell 执行失败: ${errMsg}`));
+          }
+          return;
+        }
+
+        if (stderr && stderr.trim()) {
+          log.warn('[PrinterService] PowerShell stderr:', stderr.trim());
+        }
+
+        resolve(stdout ? stdout.trim() : '');
       });
-
-      this.emit('printer-attached', info.id);
-      this.emit('status', { connected: true, printers: Array.from(this.knownPrinters.keys()) });
-    }
-  }
-
-  /**
-   * Handle USB device detach
-   * @param {usb.Device} device
-   * @private
-   */
-  _onUSBDetach(device) {
-    const desc = device.deviceDescriptor;
-    if (!desc) return;
-
-    const vid = desc.idVendor.toString(16).padStart(4, '0');
-    const pid = desc.idProduct.toString(16).padStart(4, '0');
-    const printerId = `${vid}:${pid}`;
-
-    if (this.knownPrinters.has(printerId)) {
-      log.info(`USB printer detached: ${printerId}`);
-      this.knownPrinters.delete(printerId);
-
-      this.emit('printer-detached', printerId);
-      this.emit('status', { connected: this.knownPrinters.size > 0, printers: Array.from(this.knownPrinters.keys()) });
-    }
+    });
   }
 }
 

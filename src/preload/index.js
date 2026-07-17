@@ -152,7 +152,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * Label Printer API (TSC TE344 via USB, ZPL commands)
+   * Label Printer API (TSC TE344 via Windows driver, ZPL commands)
+   *
+   * Printers are discovered through the Windows print driver (must be installed in Windows).
+   * Raw ZPL data is sent through the Windows Spooler API.
    *
    * Usage:
    *   const printers = await window.electronAPI.printer.listPrinters();
@@ -165,20 +168,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   printer: {
     /**
-     * List available USB printers (TSC)
-     * @returns {Promise<Array<{id: string, name: string, vid: string, pid: string}>>}
+     * List available printers installed in Windows
+     * @returns {Promise<Array<{id: string, name: string, driverName: string, port: string}>>}
      */
     listPrinters: () => ipcRenderer.invoke('printer:list'),
 
     /**
-     * [Debug] List ALL USB devices with their descriptors
-     * @returns {Promise<Array>} All USB devices (not just printers)
-     */
-    listAllUSBDevices: () => ipcRenderer.invoke('printer:list-all-usb'),
-
-    /**
      * Send ZPL data to printer (auto-checks font preload status)
-     * @param {string} printerId - Printer identifier from listPrinters()
+     * @param {string} printerId - Windows printer name from listPrinters()
      * @param {string} zplData - Complete ZPL string (e.g., '^XA...^XZ')
      * @returns {Promise<{success: boolean}>}
      */
@@ -193,7 +190,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /**
      * Manually trigger font preload (^CW command)
-     * @param {string} printerId - Printer identifier
+     * @param {string} printerId - Windows printer name
      * @returns {Promise<{success: boolean}>}
      */
     preloadFont: (printerId) =>
@@ -201,7 +198,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /**
      * Check if Chinese font is loaded for a printer
-     * @param {string} printerId - Printer identifier
+     * @param {string} printerId - Windows printer name
      * @returns {Promise<boolean>}
      */
     isFontLoaded: (printerId) =>

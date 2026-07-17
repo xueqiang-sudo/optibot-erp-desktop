@@ -15,6 +15,9 @@
  * Font Code: 'C'
  * - In ZPL, use ^ACN,30,30 to reference the Chinese font
  * - For English text, use ^A0N,25,25 (built-in font)
+ *
+ * Note: printerId is now the Windows printer name (e.g., "TSC TE344")
+ * instead of the old vid:pid USB format.
  */
 
 const log = require('electron-log');
@@ -31,7 +34,7 @@ const FONT_CODE = 'C';
 
 class FontPreloader {
   /**
-   * @param {PrinterService} printerService - Printer service instance for USB communication
+   * @param {PrinterService} printerService - Printer service instance for communication
    */
   constructor(printerService) {
     this.printerService = printerService;
@@ -50,17 +53,17 @@ class FontPreloader {
    * Sends ^CWC,E:CHN.TTF to map the font file to code 'C' in printer DRAM.
    * This must be called:
    * - On Electron app startup (for each connected printer)
-   * - When a new printer is connected (USB hot-plug)
+   * - When a new printer is connected (detected via polling)
    * - Before printing if font is not loaded
    *
-   * @param {string} printerId - Printer identifier (vid:pid format)
+   * @param {string} printerId - Windows printer name
    * @returns {Promise<void>}
    */
   async preloadFont(printerId) {
-    log.info(`Preloading Chinese font for printer: ${printerId}`);
+    log.info(`Preloading Chinese font for printer: "${printerId}"`);
 
     try {
-      // Send the ^CW mapping command via USB
+      // Send the ^CW mapping command via the printer service
       await this.printerService.sendRaw(printerId, FONT_MAP_COMMAND);
 
       // Mark as loaded
@@ -68,19 +71,19 @@ class FontPreloader {
       this.lastPreloadTime.set(printerId, Date.now());
 
       log.info(
-        `Font code '${FONT_CODE}' mapped to ${FONT_FILENAME} for printer ${printerId}`
+        `Font code '${FONT_CODE}' mapped to ${FONT_FILENAME} for printer "${printerId}"`
       );
     } catch (err) {
       // Mark as not loaded on failure
       this.fontLoaded.set(printerId, false);
-      log.error(`Font preload failed for printer ${printerId}:`, err.message);
+      log.error(`Font preload failed for printer "${printerId}":`, err.message);
       throw err;
     }
   }
 
   /**
    * Check if the Chinese font is currently loaded for a printer
-   * @param {string} printerId - Printer identifier
+   * @param {string} printerId - Windows printer name
    * @returns {boolean} True if ^CW mapping is active in printer DRAM
    */
   isFontLoaded(printerId) {
@@ -89,12 +92,12 @@ class FontPreloader {
 
   /**
    * Mark a printer's font as unloaded (e.g., when printer is disconnected)
-   * @param {string} printerId - Printer identifier
+   * @param {string} printerId - Windows printer name
    */
   markUnloaded(printerId) {
     this.fontLoaded.set(printerId, false);
     this.lastPreloadTime.delete(printerId);
-    log.info(`Font marked as unloaded for printer: ${printerId}`);
+    log.info(`Font marked as unloaded for printer: "${printerId}"`);
   }
 
   /**
