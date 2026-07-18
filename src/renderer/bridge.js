@@ -295,17 +295,10 @@
       // Rotation: 0, 90, 180, 270
       const rot = el.rotation || 0;
 
-      if (el.chinese) {
-        // Use "AC" TrueType font (宋体) from printer flash
-        // Vector font: x,y params are font size in dots (not multipliers)
-        const size = Math.max(8, h);
-        return `TEXT ${x},${y},"AC.TTF",${rot},${size},${size},"${content}"\n`;
-      } else {
-        // Built-in font "1" = 8x12 dots base
-        const mulY = Math.max(1, Math.round(h / 12));
-        const mulX = Math.max(1, Math.round((el.fontWidth || h) / 8));
-        return `TEXT ${x},${y},"1",${rot},${mulX},${mulY},"${content}"\n`;
-      }
+      // Use "AC.TTF" TrueType font (宋体) for all text (CJK + ASCII)
+      // Vector font: params are font size in dots (not multipliers)
+      const size = Math.max(8, h);
+      return `TEXT ${x},${y},"AC.TTF",${rot},${size},${size},"${content}"\n`;
     },
 
     /**
@@ -356,51 +349,39 @@
       function chnSizeForDots(fontSize) {
         return Math.max(8, fontSize);
       }
-      // Built-in font "1": 8x12 dots base
-      function engMulXForSize(fontSize) {
-        return Math.max(1, Math.round(fontSize / 10));
-      }
-      function engMulYForSize(fontSize) {
-        return Math.max(1, Math.round(fontSize / 14));
-      }
       // Estimate rendered text width in dots
-      // AC TTF (宋体): CJK chars ≈ fontSize dots wide, ASCII chars ≈ fontSize/2 dots
-      // Built-in "1": each char ≈ 8*mulX dots
-      function estimateTextWidth(text, fontSize, useChnFont) {
-        if (useChnFont) {
-          const size = chnSizeForDots(fontSize);
-          let w = 0;
-          for (let i = 0; i < text.length; i++) {
-            w += text.charCodeAt(i) > 127 ? size : Math.round(size / 2);
+      // AC.TTF + CODEPAGE UTF-8: printer allocates by UTF-8 byte count
+      //   - CJK chars = 3 UTF-8 bytes → 3 × fontSize dots per char
+      //   - ASCII chars = 1 byte → fontSize/2 dots per char
+      function estimateTextWidth(text, fontSize) {
+        const size = chnSizeForDots(fontSize);
+        let w = 0;
+        for (let i = 0; i < text.length; i++) {
+          if (text.charCodeAt(i) > 127) {
+            const bytes = Buffer.byteLength(text[i], 'utf-8');
+            w += bytes * size;
+          } else {
+            w += Math.round(size / 2);
           }
-          return w;
-        } else {
-          const mulX = engMulXForSize(fontSize);
-          return text.length * 8 * mulX;
         }
+        return w;
       }
 
       // ── Draw header row ──
       if (showHeader) {
         let hx = tableX;
         const hMul = chnSizeForDots(headerFontSize);
-        const hEngX = engMulXForSize(headerFontSize);
-        const hEngY = engMulYForSize(headerFontSize);
 
         for (let c = 0; c < columns.length; c++) {
           if (columns[c].header) {
             const header = (columns[c].header || '').replace(/"/g, '""');
             if (header) {
               const cellW = colWidthsDots[c];
-              const textW = estimateTextWidth(header, headerFontSize, chinese);
+              const textW = estimateTextWidth(header, headerFontSize);
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              if (chinese) {
-                tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hMul},${hMul},"${header}"\n`;
-              } else {
-                tspl += `TEXT ${hx + offsetX},${textY},"1",0,${hEngX},${hEngY},"${header}"\n`;
-              }
+              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hMul},${hMul},"${header}"\n`;
             }
           }
           hx += colWidthsDots[c];
@@ -442,12 +423,10 @@
 
             // Calculate font size in dots for this cell
             const cMul = chnSizeForDots(fontSize);
-            const eMulX = engMulXForSize(fontSize);
-            const eMulY = engMulYForSize(fontSize);
 
             // Estimate text width for alignment
-            const textW = estimateTextWidth(rawContent, fontSize, chinese);
-            const renderedH = chinese ? cMul : 12 * eMulY;
+            const textW = estimateTextWidth(rawContent, fontSize);
+            const renderedH = cMul;
 
             // Vertical centering based on actual rendered height
             const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2));
@@ -462,11 +441,7 @@
               offsetX = 2;
             }
 
-            if (chinese) {
-              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cMul},${cMul},"${content}"\n`;
-            } else {
-              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"1",0,${eMulX},${eMulY},"${content}"\n`;
-            }
+            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cMul},${cMul},"${content}"\n`;
           }
 
           cellX += colWidthsDots[c];
