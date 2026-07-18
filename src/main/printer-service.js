@@ -22,6 +22,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const log = require('electron-log');
+const iconv = require('iconv-lite');
 
 // PowerShell path (available on all modern Windows systems)
 const POWERSHELL = 'powershell.exe';
@@ -292,12 +293,12 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert TSPL string to UTF-8 encoding
-    // The TSPL output includes CODEPAGE UTF-8, so we send UTF-8 bytes to match.
-    // SimsunEx.TTF is a Unicode font that requires UTF-8 encoding for
-    // correct Chinese character mapping. UTF-8 is backward-compatible with ASCII
+    // Convert TSPL string to GBK encoding
+    // The TSPL output includes CODEPAGE GBK, so we send GBK bytes to match.
+    // SimsunEx.TTF is a GBK-encoded font that requires GBK encoding for
+    // correct Chinese character mapping. GBK is backward-compatible with ASCII
     // (bytes 0x00-0x7F are identical), so TSPL commands are unaffected.
-    const buffer = Buffer.from(data, 'utf-8');
+    const buffer = iconv.encode(data, 'gbk');
     const base64Data = buffer.toString('base64');
 
     // ★ Debug: save TSPL data to application directory for manual testing
