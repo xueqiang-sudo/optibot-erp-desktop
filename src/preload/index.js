@@ -190,7 +190,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *   DIRECTION 1
    *   CODEPAGE UTF-8
    *   CLS
-   *   TEXT 100,100,"AC.TTF",0,1,1,"品名：蓝牙耳机"
+   *   TEXT 100,100,"SimsunEx.TTF",0,1,1,"品名：蓝牙耳机"
    *   PRINT 1
    */
   printer: {

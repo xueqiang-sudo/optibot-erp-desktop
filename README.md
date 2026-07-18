@@ -7,7 +7,7 @@
 - 🖥️ **桌面应用** — 将 Frappe ERP（https://erp.optibot.cn:8080/）封装为 Windows 桌面应用
 - ⚖️ **电子秤集成** — 通过 RS232 串口读取 A7 协议称重数据，实时显示在页面上
 - 🏷️ **标签打印** — 通过 USB 发送 TSPL 指令到 TSC TE344 标签打印机
-- 🀄 **中文支持** — 使用打印机 Flash 中的 AC 字体（宋体），支持中英文混排打印
+- 🀄 **中文支持** — 使用打印机 Flash 中的 SimsunEx 字体（宋体），支持中英文混排打印
 - 🔄 **自动更新** — 支持应用自动检测和安装更新
 - 📌 **系统托盘** — 关闭窗口时最小化到系统托盘
 
@@ -31,7 +31,7 @@ electron-app/
 │   ├── icon.ico                  # Windows 应用图标
 │   ├── tray-icon.png             # 托盘图标
 │   └── fonts/
-│       └── AC.TTF                # 中文字体（宋体）
+│       └── SimsunEx.TTF                # 中文字体（宋体）
 └── build/                        # 构建输出
 ```
 
@@ -112,13 +112,13 @@ window.electronAPI.scale.onWeight((data) => {
 ### 首次部署（一次性操作）
 
 1. 使用 **Zebra Setup Utilities** 或打印机 Web 管理界面
-2. 将 `AC.TTF` 字体文件（宋体）上传到打印机 **E: 盘**
+2. 将 `SimsunEx.TTF` 字体文件（宋体）上传到打印机 **E: 盘**
 3. 字体文件持久保存在打印机闪存中（断电不丢失）
 
 ### 字体引用方式
 
 TSPL 使用 `TEXT` 命令直接引用字体文件名（不含 `.TTF` 后缀）：
-- 中文：`TEXT x,y,"AC",rotation,mulX,mulY,"内容"`
+- 中文：`TEXT x,y,"SimsunEx.TTF",rotation,mulX,mulY,"内容"`
 - 英文：`TEXT x,y,"1",rotation,mulX,mulY,"content"`（内置字体）
 
 ### ZPL 指令格式

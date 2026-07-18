@@ -475,7 +475,7 @@ function initServices() {
   });
 
   // TSPL does not need font preloading — Chinese fonts are referenced
-  // directly by name (e.g., "AC") in TEXT commands
+  // directly by name (e.g., "SimsunEx") in TEXT commands
 
   printerService.initUSBWatcher();
 

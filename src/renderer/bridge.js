@@ -5,7 +5,7 @@
  * It provides a Frappe-friendly wrapper around the electronAPI hardware APIs.
  *
  * Printing uses TSPL (TSC Printer Language) — the native language of TSC printers.
- * Chinese text uses the "AC" TrueType font (宋体) stored on the printer's flash drive.
+ * Chinese text uses the "SimsunEx" TrueType font (宋体) stored on the printer's flash drive.
  */
 
 (function () {
@@ -186,7 +186,7 @@
      * Create TSPL commands from a JSON description.
      *
      * TSPL is TSC's native printer language — works directly with the TSC Windows driver.
-     * Chinese text uses the "AC" TrueType font (宋体) stored on the printer's flash drive.
+     * Chinese text uses the "SimsunEx" TrueType font (宋体) stored on the printer's flash drive.
      *
      * @param {Object} options
      * @param {number} options.width - Label width in mm
@@ -205,7 +205,7 @@
       // ── Label setup ──
       tspl += `SIZE ${width} mm,${height} mm\n`;
       tspl += `GAP 2 mm,0 mm\n`;
-      tspl += `DENSITY 5\n`;
+      tspl += `DENSITY 3\n`;
       tspl += `CODEPAGE UTF-8\n`;
       tspl += `CLS\n`;
 
@@ -294,7 +294,7 @@
     /**
      * Generate TSPL TEXT command for a text element.
      *
-     * Chinese text: uses "AC" TrueType font (宋体) on printer's flash drive
+     * Chinese text: uses "SimsunEx" TrueType font (宋体) on printer's flash drive
      * English text: uses built-in font "1" (8x12 dots base)
      *
      * @private
@@ -307,13 +307,10 @@
       // Rotation: 0, 90, 180, 270
       const rot = el.rotation || 0;
 
-      // Use TEXT with AC.TTF (宋体) vector font
-      // Regular: width = 50% of height (narrower, lighter strokes)
-      // Bold: width = 100% of height (square, bolder strokes)
+      // Use TEXT with SimsunEx.TTF (宋体) vector font
+      // width = height for proper character proportions (no distortion)
       const size = Math.max(8, h);
-      const widthRatio = el.bold ? 1.0 : 0.5;
-      const charW = Math.max(1, Math.round(size * widthRatio));
-      return `TEXT ${x},${y},"AC.TTF",${rot},${charW},${size},"${content}"\n`;
+      return `TEXT ${x},${y},"SimsunEx.TTF",${rot},${size},${size},"${content}"\n`;
     },
 
     /**
@@ -429,14 +426,14 @@
       }
 
       // ── Helper: calculate font size in dots ──
-      // AC TTF (宋体): vector font, TEXT params are font size in dots (not multipliers)
+      // SimsunEx.TTF (宋体): vector font, TEXT params are font size in dots (not multipliers)
       function chnSizeForDots(fontSize) {
         return Math.max(8, fontSize);
       }
       // Estimate rendered text width in dots
-      // AC.TTF + CODEPAGE UTF-8: regular charW = fontSize × 0.5
-      //   - CJK chars: 3 UTF-8 bytes → 3 × charW dots
-      //   - ASCII chars: 1 byte → charW dots
+      // SimsunEx.TTF: charW = fontSize (1:1 ratio)
+      //   - CJK chars: 3 UTF-8 bytes → 3 × fontSize dots
+      //   - ASCII chars: 1 byte → fontSize dots
       function utf8ByteLen(ch) {
         const code = ch.charCodeAt(0);
         if (code <= 0x7F) return 1;
@@ -444,9 +441,8 @@
         if (code <= 0xFFFF) return 3;
         return 4;
       }
-      function estimateTextWidth(text, fontSize, bold) {
-        const ratio = bold ? 1.0 : 0.5;
-        const charW = Math.max(1, Math.round(chnSizeForDots(fontSize) * ratio));
+      function estimateTextWidth(text, fontSize) {
+        const charW = chnSizeForDots(fontSize);
         let w = 0;
         for (let i = 0; i < text.length; i++) {
           w += utf8ByteLen(text[i]) * charW;
@@ -464,12 +460,11 @@
             const header = (columns[c].header || '').replace(/"/g, '""');
             if (header) {
               const cellW = colWidthsDots[c];
-              const textW = estimateTextWidth(header, headerFontSize, false);
+              const textW = estimateTextWidth(header, headerFontSize);
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              const hCharW = Math.max(1, Math.round(hMul * 0.5));
-              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hCharW},${hMul},"${header}"\n`;
+              tspl += `TEXT ${hx + offsetX},${textY},"SimsunEx.TTF",0,${hMul},${hMul},"${header}"\n`;
             }
           }
           hx += colWidthsDots[c];
@@ -513,7 +508,7 @@
             const cMul = chnSizeForDots(fontSize);
 
             // Estimate text width for alignment
-            const textW = estimateTextWidth(rawContent, fontSize, override && override.bold);
+            const textW = estimateTextWidth(rawContent, fontSize);
             const renderedH = cMul;
 
             // Vertical centering: shift up by ~25% of fontSize to compensate
@@ -534,9 +529,7 @@
               offsetX = 2;
             }
 
-            const cellWidthRatio = (override && override.bold) ? 1.0 : 0.5;
-            const cCharW = Math.max(1, Math.round(cMul * cellWidthRatio));
-            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cCharW},${cMul},"${content}"\n`;
+            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"SimsunEx.TTF",0,${cMul},${cMul},"${content}"\n`;
           }
 
           cellX += colWidthsDots[c];
@@ -794,7 +787,7 @@
             ${printerHtml}
             <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
               <b>提示：</b>使用 TSPL (TSC 打印机原生语言) 通过 Windows 驱动 RAW 模式发送指令。
-              中文使用打印机 Flash 中的 AC 字体（宋体）。
+              中文使用打印机 Flash 中的 SimsunEx 字体（宋体）。
             </div>
           </div>
           <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">
