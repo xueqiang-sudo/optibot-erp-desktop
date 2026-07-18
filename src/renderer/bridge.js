@@ -295,11 +295,11 @@
       // Rotation: 0, 90, 180, 270
       const rot = el.rotation || 0;
 
-      // Use "AC.TTF" TrueType font (宋体) for all text (CJK + ASCII)
-      // Vector font: width = 75% of height to avoid overly bold/thick appearance
+      // Use WINDOWSFONT for AC.TTF (宋体) - supports weight control
+      // weight: 4=normal, 7=bold; width=0 lets printer auto-calculate
       const size = Math.max(8, h);
-      const charW = Math.round(size * 0.75);
-      return `TEXT ${x},${y},"AC.TTF",${rot},${charW},${size},"${content}"\n`;
+      const weight = el.bold ? 7 : 4;
+      return `WINDOWSFONT ${x},${y},AC.TTF,${size},0,${weight},0,0,0,"${content}"\n`;
     },
 
     /**
@@ -327,45 +327,70 @@
       const totalTableWidthDots = colWidthsDots.reduce((s, w) => s + w, 0);
       const totalTableHeightDots = rowHeightDots * maxRows;
 
-      // ── Build cell visibility map ──
+      // ── Build cell visibility & colspan maps ──
       const isCellHidden = {};
+      const cellSpan = {};  // cellSpan[r,c] = colspan value (default 1)
       for (const [key, override] of Object.entries(cellOverrides)) {
         if (override && override.hidden) {
           isCellHidden[key] = true;
+        }
+        if (override && override.colspan > 1) {
+          cellSpan[key] = override.colspan;
         }
       }
       function cellHidden(r, c) {
         return isCellHidden[`${r},${c}`] === true;
       }
+      function getColspan(r, c) {
+        return cellSpan[`${r},${c}`] || 1;
+      }
+      // Check if vertical line at column boundary c should be skipped in row r
+      // (skipped when a colspan from the left covers column c, or hidden cells on both sides)
+      function skipVerticalLine(r, c) {
+        // Check if left cell's colspan covers this boundary
+        for (let lc = c - 1; lc >= 0; lc--) {
+          const span = getColspan(r, lc);
+          if (lc + span > c) return true;  // colspan from lc covers column c
+        }
+        // Check if right cell is part of a colspan from further right
+        for (let rc = c; rc < columns.length; rc++) {
+          const span = getColspan(r, rc);
+          if (span > 1 && rc < c) return true;
+        }
+        // Standard hidden check: both sides hidden
+        return cellHidden(r, c - 1) && cellHidden(r, c);
+      }
+      // Check if horizontal line at row boundary r should be skipped in column c
+      function skipHorizontalLine(r, c) {
+        // Check if above cell is part of a rowspan (future: rowspan support)
+        // For now: skip if both above and below are hidden
+        return cellHidden(r - 1, c) && cellHidden(r, c);
+      }
 
-      // ── Draw border grid (skip lines adjacent to hidden cells) ──
+      // ── Draw border grid ──
       if (border) {
         const xEnd = tableX + totalTableWidthDots - 1;
         const yEnd = tableY + totalTableHeightDots - 1;
         tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
 
-        // Horizontal internal lines: draw segment only if at least one adjacent row is visible
+        // Horizontal internal lines
         for (let r = 1; r < maxRows; r++) {
           const ly = tableY + r * rowHeightDots;
           let lx = tableX;
           for (let c = 0; c < columns.length; c++) {
-            const aboveHidden = cellHidden(r - 1, c);
-            const belowHidden = cellHidden(r, c);
-            if (!aboveHidden || !belowHidden) {
+            if (!skipHorizontalLine(r, c)) {
               tspl += `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}\n`;
             }
             lx += colWidthsDots[c];
           }
         }
 
-        // Vertical internal lines: draw segment only if at least one adjacent column is visible
+        // Vertical internal lines
         let cx = tableX;
         for (let c = 1; c < columns.length; c++) {
           cx += colWidthsDots[c - 1];
           for (let r = 0; r < maxRows; r++) {
-            const leftHidden = cellHidden(r, c - 1);
-            const rightHidden = cellHidden(r, c);
-            if (!leftHidden || !rightHidden) {
+            if (!skipVerticalLine(r, c)) {
               const vy = tableY + r * rowHeightDots;
               tspl += `BAR ${cx},${vy},${borderThickness},${rowHeightDots}\n`;
             }
@@ -412,8 +437,7 @@
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              const hCharW = Math.round(hMul * 0.75);
-              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hCharW},${hMul},"${header}"\n`;
+              tspl += `WINDOWSFONT ${hx + offsetX},${textY},AC.TTF,${hMul},0,4,0,0,0,"${header}"\n`;
             }
           }
           hx += colWidthsDots[c];
@@ -460,8 +484,10 @@
             const textW = estimateTextWidth(rawContent, fontSize);
             const renderedH = cMul;
 
-            // Vertical centering based on actual rendered height
-            const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2));
+            // Vertical centering: shift up by ~25% of fontSize to compensate
+            // for WINDOWSFONT baseline positioning (text appears lower than geometric center)
+            const ascentShift = Math.round(cMul * 0.25);
+            const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2) - ascentShift);
 
             // Horizontal alignment
             let offsetX;
@@ -473,8 +499,8 @@
               offsetX = 2;
             }
 
-            const cCharW = Math.round(cMul * 0.75);
-            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cCharW},${cMul},"${content}"\n`;
+            const cellWeight = (override && override.bold) ? 7 : 4;
+            tspl += `WINDOWSFONT ${cellX + offsetX},${cellY + textOffsetY},AC.TTF,${cMul},0,${cellWeight},0,0,0,"${content}"\n`;
           }
 
           cellX += colWidthsDots[c];
