@@ -205,6 +205,7 @@
       // ── Label setup ──
       tspl += `SIZE ${width} mm,${height} mm\n`;
       tspl += `GAP 2 mm,0 mm\n`;
+      tspl += `CODEPAGE UTF-8\n`;
       tspl += `CLS\n`;
 
       // ── Render elements ──
