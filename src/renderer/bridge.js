@@ -219,7 +219,18 @@
 
         switch (el.type) {
           case 'text':
-            tspl += this._tsplText(el, x, y);
+            tspl += this._tsplText(
+              {
+                content: el.content,
+                fontSize: el.font_size || 24,
+                fontWidth: el.font_width,
+                chinese: el.chinese,
+                bold: el.bold,
+                rotation: el.rotation,
+              },
+              x,
+              y
+            );
             break;
 
           case 'date':
@@ -374,29 +385,31 @@
         const yEnd = tableY + totalTableHeightDots - 1;
         tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
 
-        // Horizontal internal lines (merge consecutive visible segments into one BAR)
+        // Horizontal internal lines
+        // When the row below has hidden cells (= merged region),
+        // draw one full-width line spanning entire table width
         for (let r = 1; r < maxRows; r++) {
           const ly = tableY + r * rowHeightDots;
-          let lx = tableX;
-          let segStart = -1;
-          let segWidth = 0;
 
+          // Check if the row below this boundary has any hidden cells
+          let belowHasHidden = false;
           for (let c = 0; c < columns.length; c++) {
-            if (!skipHorizontalLine(r, c)) {
-              if (segStart === -1) segStart = lx;
-              segWidth += colWidthsDots[c];
-            } else {
-              if (segStart !== -1) {
-                tspl += `BAR ${segStart},${ly},${segWidth},${borderThickness}\n`;
-                segStart = -1;
-                segWidth = 0;
-              }
+            if (cellHidden(r, c)) {
+              belowHasHidden = true;
+              break;
             }
-            lx += colWidthsDots[c];
           }
-          if (segStart !== -1) {
-            // Extend last segment by 1px to ensure connection with BOX border
-            tspl += `BAR ${segStart},${ly},${segWidth + 1},${borderThickness}\n`;
+
+          if (belowHasHidden) {
+            // Hidden cells exist below → draw one full-width line
+            tspl += `BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}\n`;
+          } else {
+            // No hidden cells below → draw per-column segments
+            let lx = tableX;
+            for (let c = 0; c < columns.length; c++) {
+              tspl += `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}\n`;
+              lx += colWidthsDots[c];
+            }
           }
         }
 
