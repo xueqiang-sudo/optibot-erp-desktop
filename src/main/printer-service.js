@@ -293,12 +293,9 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert TSPL string to GBK encoding
-    // The TSPL output includes CODEPAGE GBK, so we send GBK bytes to match.
-    // SimsunEx.TTF is a GBK-encoded font that requires GBK encoding for
-    // correct Chinese character mapping. GBK is backward-compatible with ASCII
-    // (bytes 0x00-0x7F are identical), so TSPL commands are unaffected.
-    const buffer = iconv.encode(data, 'gbk');
+    // Convert TSPL string to UTF-8 encoding
+    // The TSPL output includes CODEPAGE UTF-8, so we send UTF-8 bytes to match.
+    const buffer = Buffer.from(data, 'utf-8');
     const base64Data = buffer.toString('base64');
 
     // ★ Debug: save TSPL data to application directory for manual testing
