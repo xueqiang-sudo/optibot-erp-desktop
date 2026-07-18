@@ -1,6 +1,6 @@
 {
   "name": "optibot-erp-desktop",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "OptiBot ERP Desktop Application - Frappe ERP with scale and label printer integration",
   "main": "src/main/index.js",
   "author": "OptiBot",
