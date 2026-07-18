@@ -184,13 +184,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *   const printers = await window.electronAPI.printer.listPrinters();
    *   await window.electronAPI.printer.printTSPL(printers[0].id, 'SIZE 40 mm,30 mm\n...PRINT 1');
    *
-   * TSPL with Chinese text (uses CHN font on printer flash):
+   * TSPL with Chinese text (uses AC font on printer flash):
    *   SIZE 40 mm,30 mm
    *   GAP 2 mm,0
    *   DIRECTION 1
    *   CODEPAGE UTF-8
    *   CLS
-   *   TEXT 100,100,"CHN",0,1,1,"品名：蓝牙耳机"
+   *   TEXT 100,100,"AC.TTF",0,1,1,"品名：蓝牙耳机"
    *   PRINT 1
    */
   printer: {

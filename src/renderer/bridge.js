@@ -5,7 +5,7 @@
  * It provides a Frappe-friendly wrapper around the electronAPI hardware APIs.
  *
  * Printing uses TSPL (TSC Printer Language) — the native language of TSC printers.
- * Chinese text uses the "CHN" TrueType font stored on the printer's flash drive.
+ * Chinese text uses the "AC" TrueType font (宋体) stored on the printer's flash drive.
  */
 
 (function () {
@@ -186,7 +186,7 @@
      * Create TSPL commands from a JSON description.
      *
      * TSPL is TSC's native printer language — works directly with the TSC Windows driver.
-     * Chinese text uses the "CHN" TrueType font stored on the printer's flash drive.
+     * Chinese text uses the "AC" TrueType font (宋体) stored on the printer's flash drive.
      *
      * @param {Object} options
      * @param {number} options.width - Label width in mm
@@ -281,7 +281,7 @@
     /**
      * Generate TSPL TEXT command for a text element.
      *
-     * Chinese text: uses "CHN" TrueType font on printer's flash drive
+     * Chinese text: uses "AC" TrueType font (宋体) on printer's flash drive
      * English text: uses built-in font "1" (8x12 dots base)
      *
      * @private
@@ -295,11 +295,10 @@
       const rot = el.rotation || 0;
 
       if (el.chinese) {
-        // Use "CHN" TrueType font from printer flash
-        // CHN font base height is ~24 dots at multiplier 1
-        // Multiply by 2 for readable Chinese text
-        const mul = Math.max(2, Math.round(h / 24) * 2);
-        return `TEXT ${x},${y},"CHN",${rot},${mul},${mul},"${content}"\n`;
+        // Use "AC" TrueType font (宋体) from printer flash
+        // Vector font: x,y params are font size in dots (not multipliers)
+        const size = Math.max(8, h);
+        return `TEXT ${x},${y},"AC.TTF",${rot},${size},${size},"${content}"\n`;
       } else {
         // Built-in font "1" = 8x12 dots base
         const mulY = Math.max(1, Math.round(h / 12));
@@ -351,10 +350,10 @@
         }
       }
 
-      // ── Helper: calculate font multiplier based on font size ──
-      // CHN TTF font: ~24 dots height at mul=1, scales proportionally
-      function chnMulForSize(fontSize) {
-        return Math.max(1, Math.round(fontSize / 24));
+      // ── Helper: calculate font size in dots ──
+      // AC TTF (宋体): vector font, TEXT params are font size in dots (not multipliers)
+      function chnSizeForDots(fontSize) {
+        return Math.max(8, fontSize);
       }
       // Built-in font "1": 8x12 dots base
       function engMulXForSize(fontSize) {
@@ -364,14 +363,14 @@
         return Math.max(1, Math.round(fontSize / 14));
       }
       // Estimate rendered text width in dots
-      // CHN TTF: CJK chars ≈ 24*mul dots, ASCII chars ≈ 12*mul dots
+      // AC TTF (宋体): CJK chars ≈ fontSize dots wide, ASCII chars ≈ fontSize/2 dots
       // Built-in "1": each char ≈ 8*mulX dots
       function estimateTextWidth(text, fontSize, useChnFont) {
         if (useChnFont) {
-          const mul = chnMulForSize(fontSize);
+          const size = chnSizeForDots(fontSize);
           let w = 0;
           for (let i = 0; i < text.length; i++) {
-            w += text.charCodeAt(i) > 127 ? 24 * mul : 12 * mul;
+            w += text.charCodeAt(i) > 127 ? size : Math.round(size / 2);
           }
           return w;
         } else {
@@ -383,7 +382,7 @@
       // ── Draw header row ──
       if (showHeader) {
         let hx = tableX;
-        const hMul = chnMulForSize(headerFontSize);
+        const hMul = chnSizeForDots(headerFontSize);
         const hEngX = engMulXForSize(headerFontSize);
         const hEngY = engMulYForSize(headerFontSize);
 
@@ -397,7 +396,7 @@
               const textY = tableY + 2;
 
               if (chinese) {
-                tspl += `TEXT ${hx + offsetX},${textY},"CHN",0,${hMul},${hMul},"${header}"\n`;
+                tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hMul},${hMul},"${header}"\n`;
               } else {
                 tspl += `TEXT ${hx + offsetX},${textY},"1",0,${hEngX},${hEngY},"${header}"\n`;
               }
@@ -440,14 +439,14 @@
               }
             }
 
-            // Calculate font multipliers for this cell's font size
-            const cMul = chnMulForSize(fontSize);
+            // Calculate font size in dots for this cell
+            const cMul = chnSizeForDots(fontSize);
             const eMulX = engMulXForSize(fontSize);
             const eMulY = engMulYForSize(fontSize);
 
             // Estimate text width for alignment
             const textW = estimateTextWidth(rawContent, fontSize, chinese);
-            const renderedH = chinese ? 24 * cMul : 12 * eMulY;
+            const renderedH = chinese ? cMul : 12 * eMulY;
 
             // Vertical centering based on actual rendered height
             const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2));
@@ -463,7 +462,7 @@
             }
 
             if (chinese) {
-              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"CHN",0,${cMul},${cMul},"${content}"\n`;
+              tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cMul},${cMul},"${content}"\n`;
             } else {
               tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"1",0,${eMulX},${eMulY},"${content}"\n`;
             }
@@ -724,7 +723,7 @@
             ${printerHtml}
             <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
               <b>提示：</b>使用 TSPL (TSC 打印机原生语言) 通过 Windows 驱动 RAW 模式发送指令。
-              中文使用打印机 Flash 中的 CHN 字体。
+              中文使用打印机 Flash 中的 AC 字体（宋体）。
             </div>
           </div>
           <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">

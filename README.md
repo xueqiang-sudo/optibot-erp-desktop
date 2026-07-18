@@ -6,8 +6,8 @@
 
 - 🖥️ **桌面应用** — 将 Frappe ERP（https://erp.optibot.cn:8080/）封装为 Windows 桌面应用
 - ⚖️ **电子秤集成** — 通过 RS232 串口读取 A7 协议称重数据，实时显示在页面上
-- 🏷️ **标签打印** — 通过 USB 发送 ZPL 指令到 TSC TE344 标签打印机
-- 🀄 **中文支持** — 自动管理打印机中文字体映射（^CW），支持中英文混排打印
+- 🏷️ **标签打印** — 通过 USB 发送 TSPL 指令到 TSC TE344 标签打印机
+- 🀄 **中文支持** — 使用打印机 Flash 中的 AC 字体（宋体），支持中英文混排打印
 - 🔄 **自动更新** — 支持应用自动检测和安装更新
 - 📌 **系统托盘** — 关闭窗口时最小化到系统托盘
 
@@ -21,7 +21,6 @@ electron-app/
 │   │   ├── index.js              # 主进程入口
 │   │   ├── scale-service.js      # 电子秤 A7 协议解析
 │   │   ├── printer-service.js    # USB 打印机通信
-│   │   ├── font-preloader.js     # 中文字体预加载管理
 │   │   ├── tray.js               # 系统托盘
 │   │   └── updater.js            # 自动更新
 │   ├── preload/
@@ -32,7 +31,7 @@ electron-app/
 │   ├── icon.ico                  # Windows 应用图标
 │   ├── tray-icon.png             # 托盘图标
 │   └── fonts/
-│       └── CHN.TTF               # 中文字体（思源黑体）
+│       └── AC.TTF                # 中文字体（宋体）
 └── build/                        # 构建输出
 ```
 
@@ -113,15 +112,14 @@ window.electronAPI.scale.onWeight((data) => {
 ### 首次部署（一次性操作）
 
 1. 使用 **Zebra Setup Utilities** 或打印机 Web 管理界面
-2. 将 `CHN.TTF` 字体文件上传到打印机 **E: 盘**
+2. 将 `AC.TTF` 字体文件（宋体）上传到打印机 **E: 盘**
 3. 字体文件持久保存在打印机闪存中（断电不丢失）
 
-### 自动预加载
+### 字体引用方式
 
-Electron 应用在以下时机自动发送 `^CW` 指令映射字体代号：
-- 应用启动时
-- USB 打印机插入时（热插拔）
-- 打印前检查（若未加载则自动发送）
+TSPL 使用 `TEXT` 命令直接引用字体文件名（不含 `.TTF` 后缀）：
+- 中文：`TEXT x,y,"AC",rotation,mulX,mulY,"内容"`
+- 英文：`TEXT x,y,"1",rotation,mulX,mulY,"content"`（内置字体）
 
 ### ZPL 指令格式
 
@@ -130,8 +128,8 @@ Electron 应用在以下时机自动发送 `^CW` 指令映射字体代号：
 ^PW320                                  # 打印宽度 (40mm @ 203dpi)
 ^LL240                                  # 标签长度 (30mm @ 203dpi)
 
-^FO50,50^ACN,30,30^FD品名：蓝牙耳机^FS    # 中文（代号C）
-^FO50,90^ACN,25,25^FD规格：标准型^FS      # 中文
+^FO50,50^ACN,30,30^FD品名：蓝牙耳机^FS    # 中文（AC字体）
+^FO50,90^ACN,25,25^FD规格：标准型^FS      # 中文（AC字体）
 ^FO50,125^A0N,25,25^FDWeight: 500kg^FS   # 英文（内置字体）
 ^FO50,160^BCN,80,Y,N,N^FD12345678^FS    # Code128 条码
 
@@ -201,8 +199,7 @@ if (window.electronAPI) {
 | `listPrinters()` | `Promise<Printer[]>` | 列出 USB 打印机 |
 | `printZPL(id, zpl)` | `Promise<void>` | 发送 ZPL 打印 |
 | `getStatus()` | `Promise<Status>` | 获取打印机状态 |
-| `preloadFont(id)` | `Promise<void>` | 手动预加载字体 |
-| `isFontLoaded(id)` | `Promise<boolean>` | 检查字体状态 |
+| `printTSPL(id, tspl)` | `Promise<void>` | 发送 TSPL 打印 |
 | `onStatus(callback)` | `void` | 监听状态变化 |
 | `onError(callback)` | `void` | 监听错误 |
 

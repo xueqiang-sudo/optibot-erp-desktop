@@ -7,7 +7,7 @@
  * TSPL is TSC's native printer language, so the TSC Windows driver
  * passes TSPL data directly to the printer without modification.
  *
- * Chinese text uses fonts stored on the printer's flash drive (e.g., "CHN").
+ * Chinese text uses fonts stored on the printer's flash drive (e.g., "AC").
  * The font is referenced directly by name in TEXT commands — no separate
  * font mapping step is needed.
  *
@@ -36,7 +36,7 @@ const LIST_TIMEOUT = 10000;
 const PRINT_TIMEOUT = 15000;
 
 // TSPL does not need a separate font mapping command.
-// Chinese fonts are referenced directly by name (e.g., "CHN") in TEXT commands.
+// Chinese fonts are referenced directly by name (e.g., "AC") in TEXT commands.
 
 // Temp directory for PowerShell scripts
 const TEMP_DIR = os.tmpdir();
@@ -254,7 +254,7 @@ class PrinterService extends EventEmitter {
    * Send TSPL data to the printer via Windows Spooler API (RAW mode).
    *
    * TSPL is TSC's native printer language. Chinese fonts are referenced
-   * directly by name (e.g., "CHN") in TEXT commands — no separate font
+   * directly by name (e.g., "AC") in TEXT commands — no separate font
    * mapping step is needed.
    *
    * @param {string} printerId - Windows printer name
