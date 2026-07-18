@@ -205,7 +205,7 @@
       // ── Label setup ──
       tspl += `SIZE ${width} mm,${height} mm\n`;
       tspl += `GAP 2 mm,0 mm\n`;
-      tspl += `DENSITY 8\n`;
+      tspl += `DENSITY 5\n`;
       tspl += `CODEPAGE UTF-8\n`;
       tspl += `CLS\n`;
 
@@ -395,7 +395,8 @@
             lx += colWidthsDots[c];
           }
           if (segStart !== -1) {
-            tspl += `BAR ${segStart},${ly},${segWidth},${borderThickness}\n`;
+            // Extend last segment by 1px to ensure connection with BOX border
+            tspl += `BAR ${segStart},${ly},${segWidth + 1},${borderThickness}\n`;
           }
         }
 
@@ -504,9 +505,12 @@
             const ascentShift = Math.round(cMul * 0.25);
             const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2) - ascentShift);
 
-            // Horizontal alignment
+            // Horizontal alignment (auto-center when text overflows cell)
             let offsetX;
-            if (align === 'center') {
+            if (textW >= cellW) {
+              // Text wider than cell: center to minimize overflow on both sides
+              offsetX = Math.max(0, Math.round((cellW - textW) / 2));
+            } else if (align === 'center') {
               offsetX = Math.max(2, Math.round((cellW - textW) / 2));
             } else if (align === 'right') {
               offsetX = Math.max(2, cellW - textW - 4);
