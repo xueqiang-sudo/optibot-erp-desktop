@@ -308,9 +308,11 @@
       const rot = el.rotation || 0;
 
       // Use TEXT with AC.TTF (宋体) vector font
-      // width = 75% of height for natural proportions (avoids overly bold look)
+      // Regular: width = 50% of height (narrower, lighter strokes)
+      // Bold: width = 100% of height (square, bolder strokes)
       const size = Math.max(8, h);
-      const charW = Math.round(size * 0.75);
+      const widthRatio = el.bold ? 1.0 : 0.5;
+      const charW = Math.max(1, Math.round(size * widthRatio));
       return `TEXT ${x},${y},"AC.TTF",${rot},${charW},${size},"${content}"\n`;
     },
 
@@ -432,7 +434,7 @@
         return Math.max(8, fontSize);
       }
       // Estimate rendered text width in dots
-      // AC.TTF + CODEPAGE UTF-8: character cell width = fontSize × 0.75
+      // AC.TTF + CODEPAGE UTF-8: regular charW = fontSize × 0.5
       //   - CJK chars: 3 UTF-8 bytes → 3 × charW dots
       //   - ASCII chars: 1 byte → charW dots
       function utf8ByteLen(ch) {
@@ -442,8 +444,9 @@
         if (code <= 0xFFFF) return 3;
         return 4;
       }
-      function estimateTextWidth(text, fontSize) {
-        const charW = Math.round(chnSizeForDots(fontSize) * 0.75);
+      function estimateTextWidth(text, fontSize, bold) {
+        const ratio = bold ? 1.0 : 0.5;
+        const charW = Math.max(1, Math.round(chnSizeForDots(fontSize) * ratio));
         let w = 0;
         for (let i = 0; i < text.length; i++) {
           w += utf8ByteLen(text[i]) * charW;
@@ -461,11 +464,11 @@
             const header = (columns[c].header || '').replace(/"/g, '""');
             if (header) {
               const cellW = colWidthsDots[c];
-              const textW = estimateTextWidth(header, headerFontSize);
+              const textW = estimateTextWidth(header, headerFontSize, false);
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              const hCharW = Math.round(hMul * 0.75);
+              const hCharW = Math.max(1, Math.round(hMul * 0.5));
               tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hCharW},${hMul},"${header}"\n`;
             }
           }
@@ -510,7 +513,7 @@
             const cMul = chnSizeForDots(fontSize);
 
             // Estimate text width for alignment
-            const textW = estimateTextWidth(rawContent, fontSize);
+            const textW = estimateTextWidth(rawContent, fontSize, override && override.bold);
             const renderedH = cMul;
 
             // Vertical centering: shift up by ~25% of fontSize to compensate
@@ -531,7 +534,8 @@
               offsetX = 2;
             }
 
-            const cCharW = Math.round(cMul * 0.75);
+            const cellWidthRatio = (override && override.bold) ? 1.0 : 0.5;
+            const cCharW = Math.max(1, Math.round(cMul * cellWidthRatio));
             tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cCharW},${cMul},"${content}"\n`;
           }
 
