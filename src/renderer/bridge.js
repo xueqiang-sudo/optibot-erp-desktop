@@ -353,16 +353,19 @@
       // AC.TTF + CODEPAGE UTF-8: printer allocates by UTF-8 byte count
       //   - CJK chars = 3 UTF-8 bytes → 3 × fontSize dots per char
       //   - ASCII chars = 1 byte → fontSize/2 dots per char
+      function utf8ByteLen(ch) {
+        const code = ch.charCodeAt(0);
+        if (code <= 0x7F) return 1;
+        if (code <= 0x7FF) return 2;
+        if (code <= 0xFFFF) return 3;
+        return 4;
+      }
       function estimateTextWidth(text, fontSize) {
         const size = chnSizeForDots(fontSize);
         let w = 0;
         for (let i = 0; i < text.length; i++) {
-          if (text.charCodeAt(i) > 127) {
-            const bytes = Buffer.byteLength(text[i], 'utf-8');
-            w += bytes * size;
-          } else {
-            w += Math.round(size / 2);
-          }
+          const bytes = utf8ByteLen(text[i]);
+          w += bytes > 1 ? bytes * size : Math.round(size / 2);
         }
         return w;
       }
