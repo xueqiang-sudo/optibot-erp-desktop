@@ -296,9 +296,10 @@
       const rot = el.rotation || 0;
 
       // Use "AC.TTF" TrueType font (宋体) for all text (CJK + ASCII)
-      // Vector font: params are font size in dots (not multipliers)
+      // Vector font: width = 75% of height to avoid overly bold/thick appearance
       const size = Math.max(8, h);
-      return `TEXT ${x},${y},"AC.TTF",${rot},${size},${size},"${content}"\n`;
+      const charW = Math.round(size * 0.75);
+      return `TEXT ${x},${y},"AC.TTF",${rot},${charW},${size},"${content}"\n`;
     },
 
     /**
@@ -326,21 +327,49 @@
       const totalTableWidthDots = colWidthsDots.reduce((s, w) => s + w, 0);
       const totalTableHeightDots = rowHeightDots * maxRows;
 
-      // ── Draw border grid ──
+      // ── Build cell visibility map ──
+      const isCellHidden = {};
+      for (const [key, override] of Object.entries(cellOverrides)) {
+        if (override && override.hidden) {
+          isCellHidden[key] = true;
+        }
+      }
+      function cellHidden(r, c) {
+        return isCellHidden[`${r},${c}`] === true;
+      }
+
+      // ── Draw border grid (skip lines adjacent to hidden cells) ──
       if (border) {
         const xEnd = tableX + totalTableWidthDots - 1;
         const yEnd = tableY + totalTableHeightDots - 1;
         tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
 
+        // Horizontal internal lines: draw segment only if at least one adjacent row is visible
         for (let r = 1; r < maxRows; r++) {
           const ly = tableY + r * rowHeightDots;
-          tspl += `BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}\n`;
+          let lx = tableX;
+          for (let c = 0; c < columns.length; c++) {
+            const aboveHidden = cellHidden(r - 1, c);
+            const belowHidden = cellHidden(r, c);
+            if (!aboveHidden || !belowHidden) {
+              tspl += `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}\n`;
+            }
+            lx += colWidthsDots[c];
+          }
         }
 
+        // Vertical internal lines: draw segment only if at least one adjacent column is visible
         let cx = tableX;
         for (let c = 1; c < columns.length; c++) {
           cx += colWidthsDots[c - 1];
-          tspl += `BAR ${cx},${tableY},${borderThickness},${totalTableHeightDots}\n`;
+          for (let r = 0; r < maxRows; r++) {
+            const leftHidden = cellHidden(r, c - 1);
+            const rightHidden = cellHidden(r, c);
+            if (!leftHidden || !rightHidden) {
+              const vy = tableY + r * rowHeightDots;
+              tspl += `BAR ${cx},${vy},${borderThickness},${rowHeightDots}\n`;
+            }
+          }
         }
       }
 
@@ -350,9 +379,9 @@
         return Math.max(8, fontSize);
       }
       // Estimate rendered text width in dots
-      // AC.TTF + CODEPAGE UTF-8: printer allocates by UTF-8 byte count
-      //   - CJK chars = 3 UTF-8 bytes → 3 × fontSize dots per char
-      //   - ASCII chars = 1 byte → fontSize/2 dots per char
+      // AC.TTF + CODEPAGE UTF-8: character cell width = fontSize × 0.75
+      //   - CJK chars: 3 UTF-8 bytes → 3 × charW dots
+      //   - ASCII chars: 1 byte → charW dots
       function utf8ByteLen(ch) {
         const code = ch.charCodeAt(0);
         if (code <= 0x7F) return 1;
@@ -361,11 +390,10 @@
         return 4;
       }
       function estimateTextWidth(text, fontSize) {
-        const size = chnSizeForDots(fontSize);
+        const charW = Math.round(chnSizeForDots(fontSize) * 0.75);
         let w = 0;
         for (let i = 0; i < text.length; i++) {
-          const bytes = utf8ByteLen(text[i]);
-          w += bytes > 1 ? bytes * size : Math.round(size / 2);
+          w += utf8ByteLen(text[i]) * charW;
         }
         return w;
       }
@@ -384,7 +412,8 @@
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hMul},${hMul},"${header}"\n`;
+              const hCharW = Math.round(hMul * 0.75);
+              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hCharW},${hMul},"${header}"\n`;
             }
           }
           hx += colWidthsDots[c];
@@ -444,7 +473,8 @@
               offsetX = 2;
             }
 
-            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cMul},${cMul},"${content}"\n`;
+            const cCharW = Math.round(cMul * 0.75);
+            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cCharW},${cMul},"${content}"\n`;
           }
 
           cellX += colWidthsDots[c];
