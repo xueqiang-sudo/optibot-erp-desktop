@@ -205,6 +205,7 @@
       // ── Label setup ──
       tspl += `SIZE ${width} mm,${height} mm\n`;
       tspl += `GAP 2 mm,0 mm\n`;
+      tspl += `DENSITY 8\n`;
       tspl += `CODEPAGE UTF-8\n`;
       tspl += `CLS\n`;
 
@@ -295,11 +296,11 @@
       // Rotation: 0, 90, 180, 270
       const rot = el.rotation || 0;
 
-      // Use WINDOWSFONT for AC.TTF (宋体) - supports weight control
-      // weight: 4=normal, 7=bold; width=0 lets printer auto-calculate
+      // Use TEXT with AC.TTF (宋体) vector font
+      // width = 75% of height for natural proportions (avoids overly bold look)
       const size = Math.max(8, h);
-      const weight = el.bold ? 7 : 4;
-      return `WINDOWSFONT ${x},${y},AC.TTF,${size},0,${weight},0,0,0,"${content}"\n`;
+      const charW = Math.round(size * 0.75);
+      return `TEXT ${x},${y},"AC.TTF",${rot},${charW},${size},"${content}"\n`;
     },
 
     /**
@@ -373,15 +374,28 @@
         const yEnd = tableY + totalTableHeightDots - 1;
         tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
 
-        // Horizontal internal lines
+        // Horizontal internal lines (merge consecutive visible segments into one BAR)
         for (let r = 1; r < maxRows; r++) {
           const ly = tableY + r * rowHeightDots;
           let lx = tableX;
+          let segStart = -1;
+          let segWidth = 0;
+
           for (let c = 0; c < columns.length; c++) {
             if (!skipHorizontalLine(r, c)) {
-              tspl += `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}\n`;
+              if (segStart === -1) segStart = lx;
+              segWidth += colWidthsDots[c];
+            } else {
+              if (segStart !== -1) {
+                tspl += `BAR ${segStart},${ly},${segWidth},${borderThickness}\n`;
+                segStart = -1;
+                segWidth = 0;
+              }
             }
             lx += colWidthsDots[c];
+          }
+          if (segStart !== -1) {
+            tspl += `BAR ${segStart},${ly},${segWidth},${borderThickness}\n`;
           }
         }
 
@@ -437,7 +451,8 @@
               const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
               const textY = tableY + 2;
 
-              tspl += `WINDOWSFONT ${hx + offsetX},${textY},AC.TTF,${hMul},0,4,0,0,0,"${header}"\n`;
+              const hCharW = Math.round(hMul * 0.75);
+              tspl += `TEXT ${hx + offsetX},${textY},"AC.TTF",0,${hCharW},${hMul},"${header}"\n`;
             }
           }
           hx += colWidthsDots[c];
@@ -485,7 +500,7 @@
             const renderedH = cMul;
 
             // Vertical centering: shift up by ~25% of fontSize to compensate
-            // for WINDOWSFONT baseline positioning (text appears lower than geometric center)
+            // for font baseline positioning (text may appear lower than geometric center)
             const ascentShift = Math.round(cMul * 0.25);
             const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2) - ascentShift);
 
@@ -499,8 +514,8 @@
               offsetX = 2;
             }
 
-            const cellWeight = (override && override.bold) ? 7 : 4;
-            tspl += `WINDOWSFONT ${cellX + offsetX},${cellY + textOffsetY},AC.TTF,${cMul},0,${cellWeight},0,0,0,"${content}"\n`;
+            const cCharW = Math.round(cMul * 0.75);
+            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"AC.TTF",0,${cCharW},${cMul},"${content}"\n`;
           }
 
           cellX += colWidthsDots[c];
