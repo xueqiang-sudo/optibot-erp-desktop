@@ -1,12 +1,14 @@
 /**
- * Label Printer Service — TSCLIB.dll via FFI
+ * Label Printer Service — TSCLIB.dll via PowerShell P/Invoke
  *
  * Uses TSCLIB.dll (x64) to print labels through the TSC Windows driver.
+ * DLL functions are called via PowerShell Add-Type + [DllImport] P/Invoke.
+ *
  * Text rendering uses Windows system fonts (SimSun/宋体) via windowsfontUnicode(),
  * eliminating the dependency on printer flash-stored fonts.
+ * Bold text is supported via the bold parameter.
  *
- * Printer discovery still uses PowerShell Get-Printer cmdlet.
- * Actual printing is done via TSCLIB.dll FFI calls (no PowerShell, no winspool.drv).
+ * Printer discovery uses PowerShell Get-Printer cmdlet.
  */
 
 const { EventEmitter } = require('events');

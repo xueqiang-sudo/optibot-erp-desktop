@@ -1,18 +1,27 @@
 /**
- * TSCLIB.dll Wrapper — FFI bindings for TSC label printing via Windows driver
+ * TSCLIB.dll Wrapper — PowerShell P/Invoke bridge for TSC label printing
  *
- * Uses koffi to load TSCLIB.dll (x64) and call its exported functions.
- * Text rendering uses Windows system fonts (SimSun/宋体) via windowsfontUnicode(),
- * eliminating the dependency on printer flash-stored fonts (SimsunEx.TTF).
+ * Uses PowerShell's Add-Type with [DllImport] to call TSCLIB.dll functions.
+ * This approach is stable and reliable — same mechanism as the old raw TSPL printing,
+ * but calling individual DLL functions instead of sending raw TSPL strings.
  *
- * Bold text is supported via the bold parameter of windowsfontUnicode().
+ * Text rendering uses Windows system fonts (SimSun/宋体) via WindowsFontUnicode(),
+ * eliminating the dependency on printer flash-stored fonts.
+ * Bold text is supported via the bold parameter.
  *
- * DLL export names verified via objdump - all are plain C names (no C++ mangling).
+ * DLL function signatures verified from .lib symbol table and objdump exports.
  */
 
-const koffi = require('koffi');
+const { execFile } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const log = require('electron-log');
+
+const POWERSHELL = 'powershell.exe';
+const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
+const TEMP_DIR = os.tmpdir();
+const PRINT_TIMEOUT = 15000;
 
 // ─── DLL Path Resolution ──────────────────────────────────────────
 
@@ -31,248 +40,209 @@ function getDllPath() {
   return path.join(base, 'TSCLIB.dll');
 }
 
-// ─── Safe bind helper ─────────────────────────────────────────────
+// ─── PowerShell Helpers ───────────────────────────────────────────
 
 /**
- * Try to bind a DLL function. Returns null on failure.
- * Tries plain name first, then ordinal fallback.
- *
- * @param {object} lib - koffi library handle
- * @param {string} name - Plain export name
- * @param {string} retType - Return type (e.g. 'int')
- * @param {string[]} paramTypes - Parameter types (e.g. ['str', 'int'])
- * @param {number|null} ordinal - Export ordinal as fallback
- * @returns {Function|null}
+ * Escape a string for PowerShell single-quoted string.
+ * In PS single-quoted strings, only ' needs escaping (doubled to '').
  */
-function bindFunc(lib, name, retType, paramTypes, ordinal) {
-  // Try plain name first
-  try {
-    const fn = lib.func(name, retType, paramTypes);
-    log.info(`[TSCLIB] Bound: ${name}(${paramTypes.join(', ')}) → ${retType}`);
-    return fn;
-  } catch (err) {
-    log.warn(`[TSCLIB] Plain name "${name}" failed: ${err.message}`);
-  }
+function psEscape(str) {
+  return (str || '').replace(/'/g, "''");
+}
 
-  // Try ordinal fallback
-  if (ordinal != null) {
-    try {
-      const fn = lib.func(ordinal, retType, paramTypes);
-      log.info(`[TSCLIB] Bound ordinal ${ordinal} as ${name}(${paramTypes.join(', ')}) → ${retType}`);
-      return fn;
-    } catch (err2) {
-      log.warn(`[TSCLIB] Ordinal ${ordinal} also failed: ${err2.message}`);
-    }
-  }
+/**
+ * Run a PowerShell script via temp file.
+ * @param {string} script - PowerShell script content
+ * @param {number} timeout - Timeout in ms
+ * @returns {Promise<string>} stdout
+ */
+function runPowerShell(script, timeout = PRINT_TIMEOUT) {
+  return new Promise((resolve, reject) => {
+    const scriptFile = path.join(
+      TEMP_DIR,
+      `optibot-tsc-${process.pid}-${Date.now()}.ps1`
+    );
 
-  log.error(`[TSCLIB] ✗ Failed to bind: ${name}`);
-  return null;
+    // UTF-8 BOM for correct PowerShell encoding
+    const BOM = '';
+    fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
+
+    const args = [...POWERSHELL_ARGS, '-File', scriptFile];
+
+    const child = execFile(POWERSHELL, args, {
+      timeout,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+      encoding: 'utf-8',
+    }, (error, stdout, stderr) => {
+      try { fs.unlinkSync(scriptFile); } catch (e) { /* ignore */ }
+
+      if (error) {
+        if (error.killed) {
+          reject(new Error(`TSCLIB 打印超时 (${timeout / 1000}秒)`));
+        } else {
+          const errMsg = stderr ? stderr.trim() : error.message;
+          reject(new Error(`TSCLIB 执行失败: ${errMsg}`));
+        }
+        return;
+      }
+
+      if (stderr && stderr.trim()) {
+        log.warn('[TSCLIB] PowerShell stderr:', stderr.trim());
+      }
+
+      resolve(stdout ? stdout.trim() : '');
+    });
+  });
 }
 
 // ─── TSCLibWrapper Class ──────────────────────────────────────────
 
 class TSCLibWrapper {
   constructor() {
-    this._lib = null;
-    this._portOpen = false;
+    this._dllPath = getDllPath();
     this._printing = false;
-    this._loaded = false;
-
-    // Function references
-    this._fn = {};
   }
 
   /**
-   * Load TSCLIB.dll and bind all function signatures.
-   * @throws {Error} if DLL cannot be loaded
+   * Verify DLL exists and is loadable.
+   * Called during init to catch problems early.
    */
   load() {
-    if (this._loaded) return;
-
-    const dllPath = getDllPath();
-    log.info(`[TSCLIB] Loading DLL: ${dllPath}`);
-
-    const fs = require('fs');
-    if (!fs.existsSync(dllPath)) {
-      throw new Error(`TSCLIB.dll 不存在: ${dllPath}`);
+    if (!fs.existsSync(this._dllPath)) {
+      throw new Error(`TSCLIB.dll 不存在: ${this._dllPath}`);
     }
-
-    try {
-      this._lib = koffi.load(dllPath);
-      log.info('[TSCLIB] DLL loaded successfully');
-    } catch (err) {
-      log.error(`[TSCLIB] Failed to load DLL: ${err.message}`);
-      throw new Error(`TSCLIB.dll 加载失败: ${err.message}\n路径: ${dllPath}`);
-    }
-
-    // ── Bind functions using plain export names (verified via objdump) ──
-    // All signatures decoded from .lib C++ mangled names
-    //
-    // Key: setup() takes 7 char* params (not 8 ints!)
-    //      barcode() takes 9 char* params
-    //      qrcode() takes 8 char* params
-    //      windowsfontUnicode() takes 7 ints + char* fontName + wchar_t* text
-
-    // Bindings: [name, returnType, paramTypes[], ordinal]
-    // All signatures decoded from .lib C++ mangled names, plain names verified via objdump
-    const bindings = [
-      // Port management
-      ['openport',    'int', ['str'],                                         92],
-      ['closeport',   'int', [],                                               33],
-
-      // Label setup — 7 string params (confirmed from mangled name ?setup@@YAHPEAD000000@Z)
-      ['setup',       'int', ['str','str','str','str','str','str','str'],     127],
-
-      // Buffer & print
-      ['clearbuffer', 'int', [],                                               29],
-      ['printlabel',  'int', ['str','str'],                                   104],
-
-      // Text — windowsfont: 7 ints + char* fontName + char* text (ASCII only)
-      ['windowsfont', 'int', ['int','int','int','int','int','int','int','str','str'], 155],
-
-      // Text — windowsfontUnicode: 7 ints + char* fontName + wchar_t* text (UTF-16, for Chinese)
-      ['windowsfontUnicode', 'int', ['int','int','int','int','int','int','int','str','str16'], 162],
-
-      // Barcode — 9 string params (confirmed from ?barcode@@YAHPEAD000000000@Z)
-      ['barcode',     'int', ['str','str','str','str','str','str','str','str','str'], 24],
-
-      // QR code — 8 string params (confirmed from ?qrcode@@YAHPEAD00000000@Z)
-      ['qrcode',      'int', ['str','str','str','str','str','str','str','str'], 107],
-
-      // Raw TSPL passthrough
-      ['sendcommand',    'int', ['str'],                                      115],
-      ['sendcommandutf8','int', ['str'],                                      123],
-
-      // Utility
-      ['formfeed',    'int', [],                                               81],
-      ['nobackfeed',  'int', [],                                               85],
-    ];
-
-    let boundCount = 0;
-    let failCount = 0;
-
-    for (const [name, retType, paramTypes, ordinal] of bindings) {
-      const fn = bindFunc(this._lib, name, retType, paramTypes, ordinal);
-      if (fn) {
-        this._fn[name] = fn;
-        boundCount++;
-      } else {
-        failCount++;
-      }
-    }
-
-    log.info(`[TSCLIB] Function binding complete: ${boundCount} bound, ${failCount} failed`);
-
-    if (failCount > 0 && !this._fn.openport) {
-      throw new Error('TSCLIB.dll 关键函数绑定失败 (openport)，无法打印');
-    }
-
-    this._loaded = true;
+    log.info(`[TSCLIB] DLL found at: ${this._dllPath}`);
   }
 
   /**
-   * Safe DLL call — catches exceptions and logs results.
-   * @param {string} name - Function name for logging
-   * @param  {...any} args - Arguments to pass to DLL function
-   * @returns {number} Return value
-   */
-  _call(name, ...args) {
-    const fn = this._fn[name];
-    if (!fn) {
-      throw new Error(`TSCLIB 函数 ${name} 未绑定`);
-    }
-
-    log.debug(`[TSCLIB] → ${name}(${args.map(a => typeof a === 'string' ? `"${a.substring(0, 30)}"` : a).join(', ')})`);
-
-    try {
-      const result = fn(...args);
-      log.debug(`[TSCLIB] ← ${name} = ${result}`);
-      return result;
-    } catch (err) {
-      log.error(`[TSCLIB] ✗ ${name} crashed: ${err.message}`);
-      throw new Error(`TSCLIB ${name} 调用异常: ${err.message}`);
-    }
-  }
-
-  /**
-   * Print a label using TSCLIB.dll.
+   * Print a label using TSCLIB.dll via PowerShell P/Invoke.
    *
    * @param {string} printerName - Windows printer name
    * @param {Object} config - Label configuration
    * @returns {Promise<{success: boolean}>}
    */
   async printLabel(printerName, config) {
-    if (!this._loaded) {
-      this.load();
-    }
-
     if (this._printing) {
       throw new Error('打印机忙，请稍后再试');
     }
 
     this._printing = true;
 
-    // ── Open port ──
-    log.info(`[TSCLIB] Opening port: "${printerName}"`);
-    const openResult = this._call('openport', printerName);
-    if (openResult !== 1) {
-      this._printing = false;
-      throw new Error(`无法打开打印机端口: "${printerName}" (返回值: ${openResult})`);
-    }
-    this._portOpen = true;
-
     try {
       const { width, height, dpi = 203, copies = 1, elements } = config;
       const dotsPerMM = dpi / 25.4;
 
-      // ── Setup label ──
-      log.info(`[TSCLIB] Setup: ${width}×${height}mm, dpi=${dpi}`);
-      this._call('setup',
-        String(width), String(height),
-        '4',    // speed
-        '8',    // density
-        '0',    // sensor (0=gap)
-        '0',    // vertical
-        '2,0'   // gap: 2mm,0mm
-      );
+      log.info(`[TSCLIB] Building script: ${width}×${height}mm, ${elements.length} elements, ${copies} copies`);
 
-      // ── Clear buffer ──
-      this._call('clearbuffer');
+      // Build the complete PowerShell script
+      const script = this._buildScript(printerName, width, height, copies, elements, dotsPerMM);
 
-      // ── Render elements ──
-      for (let i = 0; i < elements.length; i++) {
-        const el = elements[i];
-        const x = Math.round((el.x || 0) * dotsPerMM);
-        const y = Math.round((el.y || 0) * dotsPerMM);
+      // Save script for debugging
+      const appDir = path.dirname(process.execPath);
+      const debugFile = path.join(appDir, 'debug-last-tsclib.ps1');
+      try {
+        fs.writeFileSync(debugFile, script, 'utf-8');
+        log.info(`[TSCLIB] Script saved to: ${debugFile}`);
+      } catch (e) { /* ignore */ }
 
-        log.debug(`[TSCLIB] Element ${i}: type=${el.type}, x=${el.x}mm→${x}dots, y=${el.y}mm→${y}dots`);
+      // Execute
+      log.info(`[TSCLIB] Executing PowerShell script (${script.length} chars)`);
+      const result = await runPowerShell(script, PRINT_TIMEOUT);
 
-        try {
-          this._renderElement(el, x, y, dotsPerMM);
-        } catch (elErr) {
-          log.error(`[TSCLIB] Element ${i} (${el.type}) failed: ${elErr.message}`);
-          // Continue with other elements — don't abort entire label
-        }
+      if (result === 'OK') {
+        log.info('[TSCLIB] Print job sent successfully');
+        return { success: true };
+      } else {
+        log.warn(`[TSCLIB] Unexpected output: ${result}`);
+        return { success: true };
       }
-
-      // ── Print ──
-      log.info(`[TSCLIB] Printing ${copies} copy/copies`);
-      this._call('printlabel', '1', String(copies));
-
-      log.info('[TSCLIB] Print job sent successfully');
-      return { success: true };
     } finally {
-      // Always close port
-      if (this._portOpen) {
-        try {
-          this._call('closeport');
-        } catch (err) {
-          log.warn(`[TSCLIB] closeport error: ${err.message}`);
-        }
-        this._portOpen = false;
-      }
       this._printing = false;
     }
+  }
+
+  /**
+   * Build the complete PowerShell script for a label.
+   * @private
+   */
+  _buildScript(printerName, width, height, copies, elements, dotsPerMM) {
+    // Normalize DLL path: use forward slashes to avoid C# backslash escape issues
+    const dllPath = this._dllPath.replace(/\\/g, '/');
+
+    let s = `$ErrorActionPreference = 'Stop'\n`;
+    s += `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\n`;
+
+    // ── Define P/Invoke wrappers ──
+    // TSCLibA: ANSI string marshaling (most functions)
+    // TSCLibU: Unicode string marshaling (windowsfontUnicode only)
+    s += `Add-Type -TypeDefinition @"\n`;
+    s += `using System;\n`;
+    s += `using System.Runtime.InteropServices;\n\n`;
+
+    // ANSI class — for all functions except WindowsFontUnicode
+    s += `public static class TSCLibA {\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int openport(string portName);\n\n`;
+    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int closeport();\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int setup(string w, string h, string speed, string density, string sensor, string vertical, string gap);\n\n`;
+    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int clearbuffer();\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int printlabel(string setName, string copies);\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int windowsfont(int x, int y, int fontH, int fontW, int bold, int italic, int underline, string fontName, string text);\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int barcode(string x, string y, string type, string height, string hr, string align, string rot, string narrow, string data);\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int qrcode(string x, string y, string ec, string cell, string mode, string rot, string data, string extra);\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int sendcommand(string cmd);\n\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int sendcommandutf8(string cmd);\n\n`;
+    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int formfeed();\n`;
+    s += `}\n\n`;
+
+    // Unicode class — for windowsfontUnicode (wchar_t* text)
+    s += `public static class TSCLibU {\n`;
+    s += `    [DllImport("${dllPath}", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]\n`;
+    s += `    public static extern int windowsfontUnicode(int x, int y, int fontH, int fontW, int bold, int italic, int underline, string fontName, string text);\n`;
+    s += `}\n`;
+    s += `"@\n\n`;
+
+    // ── Open port ──
+    s += `$printerName = '${psEscape(printerName)}'\n`;
+    s += `$r = [TSCLibA]::openport($printerName)\n`;
+    s += `if ($r -ne 1) { throw "openport failed for '$printerName' (returned $r)" }\n\n`;
+
+    s += `try {\n`;
+
+    // ── Setup ──
+    s += `    [TSCLibA]::setup('${width}', '${height}', '4', '8', '0', '0', '2,0') | Out-Null\n`;
+    s += `    [TSCLibA]::clearbuffer() | Out-Null\n\n`;
+
+    // ── Render elements ──
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      const x = Math.round((el.x || 0) * dotsPerMM);
+      const y = Math.round((el.y || 0) * dotsPerMM);
+
+      s += `    # Element ${i}: ${el.type}\n`;
+      s += this._renderElement(el, x, y, dotsPerMM);
+    }
+
+    // ── Print ──
+    s += `\n    [TSCLibA]::printlabel('1', '${copies}') | Out-Null\n`;
+    s += `    Write-Output 'OK'\n`;
+    s += `}\n`;
+    s += `finally {\n`;
+    s += `    [TSCLibA]::closeport() | Out-Null\n`;
+    s += `}\n`;
+
+    return s;
   }
 
   // ─── Element Renderers ──────────────────────────────────────────
@@ -281,74 +251,60 @@ class TSCLibWrapper {
     switch (el.type) {
       case 'text':
       case 'date':
-        this._renderText(el, x, y);
-        break;
+        return this._renderText(el, x, y);
       case 'barcode':
-        this._renderBarcode(el, x, y);
-        break;
+        return this._renderBarcode(el, x, y);
       case 'qrcode':
-        this._renderQRCode(el, x, y);
-        break;
+        return this._renderQRCode(el, x, y);
       case 'line':
-        this._renderLine(el, x, y, dotsPerMM);
-        break;
+        return this._renderLine(el, x, y, dotsPerMM);
       case 'table':
-        this._renderTable(el, x, y, dotsPerMM);
-        break;
+        return this._renderTable(el, x, y, dotsPerMM);
       default:
         log.warn(`[TSCLIB] Unknown element type: ${el.type}`);
+        return '';
     }
   }
 
-  /**
-   * Render text using windowsfontUnicode (Windows system font, supports Chinese + bold).
-   */
   _renderText(el, x, y) {
     const content = el.content || '';
-    if (!content) return;
+    if (!content) return '';
 
     const fontH = Math.max(8, el.font_size || el.fontSize || 24);
     const fontW = el.font_width || el.fontWidth || fontH;
     const bold = el.bold ? 1 : 0;
     const fontName = el.font_name || 'SimSun';
 
-    log.debug(`[TSCLIB] Text: "${content.substring(0, 30)}" fontH=${fontH} bold=${bold} font=${fontName}`);
-    this._call('windowsfontUnicode', x, y, fontH, fontW, bold, 0, 0, fontName, content);
+    return `    [TSCLibU]::windowsfontUnicode(${x}, ${y}, ${fontH}, ${fontW}, ${bold}, 0, 0, '${psEscape(fontName)}', '${psEscape(content)}') | Out-Null\n`;
   }
 
   _renderBarcode(el, x, y) {
     if (el.barcodeType === 'QR') {
-      this._renderQRCode(el, x, y);
-      return;
+      return this._renderQRCode(el, x, y);
     }
-    const h = String(el.height || 60);
+    const h = el.height || 60;
     const content = el.content || '';
-    log.debug(`[TSCLIB] Barcode 128: "${content.substring(0, 30)}" h=${h}`);
-    this._call('barcode',
-      String(x), String(y), '128', h, '1', '0', '2', '2', content
-    );
+    return `    [TSCLibA]::barcode('${x}', '${y}', '128', '${h}', '1', '0', '2', '2', '${psEscape(content)}') | Out-Null\n`;
   }
 
   _renderQRCode(el, x, y) {
-    const cellSize = String(el.size || 6);
+    const cellSize = el.size || 6;
     let content = el.content || '';
     if (el.gs1) content = '>8' + content;
-    log.debug(`[TSCLIB] QR: "${content.substring(0, 30)}" cell=${cellSize}`);
-    this._call('qrcode',
-      String(x), String(y), 'L', cellSize, 'A', '0', content, ''
-    );
+    return `    [TSCLibA]::qrcode('${x}', '${y}', 'L', '${cellSize}', 'A', '0', '${psEscape(content)}', '') | Out-Null\n`;
   }
 
   _renderLine(el, x, y, dotsPerMM) {
     const lineW = Math.round((el.width || 50) * dotsPerMM);
     const thickness = el.thickness || 2;
-    this._call('sendcommand', `BAR ${x},${y},${lineW},${thickness}`);
+    return `    [TSCLibA]::sendcommand('BAR ${x},${y},${lineW},${thickness}') | Out-Null\n`;
   }
 
   /**
-   * Render table — migrated from bridge.js _tsplTable().
+   * Render table — same layout logic as old _tsplTable, but calling DLL via P/Invoke.
    */
   _renderTable(el, tableX, tableY, dotsPerMM) {
+    let s = '';
     const columns = el.columns || [];
     const cellOverrides = el.cell_overrides || {};
     const maxRows = el.max_rows || 6;
@@ -362,7 +318,7 @@ class TSCLibWrapper {
     const fontName = el.font_name || 'SimSun';
 
     const colWidthsDots = columns.map((col) => Math.round((col.width || 20) * dotsPerMM));
-    const totalTableWidthDots = colWidthsDots.reduce((s, w) => s + w, 0);
+    const totalTableWidthDots = colWidthsDots.reduce((a, w) => a + w, 0);
     const totalTableHeightDots = rowHeightDots * maxRows;
 
     // Cell visibility & colspan
@@ -389,7 +345,7 @@ class TSCLibWrapper {
     if (border) {
       const xEnd = tableX + totalTableWidthDots - 1;
       const yEnd = tableY + totalTableHeightDots - 1;
-      this._call('sendcommand', `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}`);
+      s += `    [TSCLibA]::sendcommand('BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}') | Out-Null\n`;
 
       for (let r = 1; r < maxRows; r++) {
         const ly = tableY + r * rowHeightDots;
@@ -398,11 +354,11 @@ class TSCLibWrapper {
           if (cellHidden(r, c)) { belowHasHidden = true; break; }
         }
         if (belowHasHidden) {
-          this._call('sendcommand', `BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}`);
+          s += `    [TSCLibA]::sendcommand('BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}') | Out-Null\n`;
         } else {
           let lx = tableX;
           for (let c = 0; c < columns.length; c++) {
-            this._call('sendcommand', `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}`);
+            s += `    [TSCLibA]::sendcommand('BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}') | Out-Null\n`;
             lx += colWidthsDots[c];
           }
         }
@@ -414,7 +370,7 @@ class TSCLibWrapper {
         for (let r = 0; r < maxRows; r++) {
           if (!skipVerticalLine(r, c)) {
             const vy = tableY + r * rowHeightDots;
-            this._call('sendcommand', `BAR ${cx},${vy},${borderThickness},${rowHeightDots}`);
+            s += `    [TSCLibA]::sendcommand('BAR ${cx},${vy},${borderThickness},${rowHeightDots}') | Out-Null\n`;
           }
         }
       }
@@ -441,9 +397,7 @@ class TSCLibWrapper {
           const cellW = colWidthsDots[c];
           const textW = estimateTextWidth(header, headerFontSize);
           const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
-          this._call('windowsfontUnicode',
-            hx + offsetX, tableY + 2, hFontSize, hFontSize, 1, 0, 0, fontName, header
-          );
+          s += `    [TSCLibU]::windowsfontUnicode(${hx + offsetX}, ${tableY + 2}, ${hFontSize}, ${hFontSize}, 1, 0, 0, '${psEscape(fontName)}', '${psEscape(header)}') | Out-Null\n`;
         }
         hx += colWidthsDots[c];
       }
@@ -491,24 +445,17 @@ class TSCLibWrapper {
             offsetX = 2;
           }
 
-          this._call('windowsfontUnicode',
-            cellX + offsetX, cellY + textOffsetY, cFontSize, cFontSize, 0, 0, 0, fontName, rawContent
-          );
+          s += `    [TSCLibU]::windowsfontUnicode(${cellX + offsetX}, ${cellY + textOffsetY}, ${cFontSize}, ${cFontSize}, 0, 0, 0, '${psEscape(fontName)}', '${psEscape(rawContent)}') | Out-Null\n`;
         }
         cellX += colWidthsDots[c];
       }
     }
+
+    return s;
   }
 
-  /**
-   * Close port and release resources.
-   */
   close() {
-    if (this._portOpen && this._fn.closeport) {
-      try { this._call('closeport'); } catch (e) { /* ignore */ }
-      this._portOpen = false;
-    }
-    this._printing = false;
+    // No persistent state to clean up — each print spawns a new PowerShell process
   }
 }
 
