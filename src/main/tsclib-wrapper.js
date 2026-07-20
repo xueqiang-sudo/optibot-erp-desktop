@@ -149,22 +149,30 @@ class TSCLibWrapper {
   _call(name, ...args) {
     const fn = this._fn[name];
     if (!fn) throw new Error(`TSCLIB 函数 ${name} 未绑定`);
-    log.debug(`[TSCLIB] → ${name}(${args.map(a => typeof a === 'string' ? `"${a.substring(0, 40)}"` : a).join(', ')})`);
+    const argStr = args.map(a => typeof a === 'string' ? `"${a.substring(0, 40)}"` : a).join(', ');
+    log.info(`[TSCLIB] → ${name}(${argStr})`);
+    // Write to diag file BEFORE the call (if it crashes, we see the last call)
+    try { fs.appendFileSync(DIAG_FILE, `[CALL] ${name}(${argStr})\n`); } catch (e) {}
     try {
       const result = fn(...args);
-      log.debug(`[TSCLIB] ← ${name} = ${result}`);
+      log.info(`[TSCLIB] ← ${name} = ${result}`);
+      try { fs.appendFileSync(DIAG_FILE, `[OK] ${name} = ${result}\n`); } catch (e) {}
       return result;
     } catch (err) {
       log.error(`[TSCLIB] ✗ ${name}: ${err.message}`);
+      try { fs.appendFileSync(DIAG_FILE, `[ERR] ${name}: ${err.message}\n`); } catch (e) {}
       throw new Error(`TSCLIB ${name}: ${err.message}`);
     }
   }
 
   async printLabel(printerName, config) {
+    try { fs.appendFileSync(DIAG_FILE, `[PRINT] printLabel called: printer="${printerName}", loaded=${this._loaded}\n`); } catch (e) {}
+
     if (!this._loaded) this.load();
     if (this._printing) throw new Error('打印机忙');
 
     this._printing = true;
+    try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling openport...\n`); } catch (e) {}
     const r = this._call('openport', printerName);
     if (r !== 1) { this._printing = false; throw new Error(`无法打开端口: ${printerName}`); }
     this._portOpen = true;
@@ -173,9 +181,12 @@ class TSCLibWrapper {
       const { width, height, dpi = 203, copies = 1, elements } = config;
       const dpm = dpi / 25.4;
 
+      try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling setup ${width}x${height}...\n`); } catch (e) {}
       this._call('setup', String(width), String(height), '4', '8', '0', '0', '2,0');
+      try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling clearbuffer...\n`); } catch (e) {}
       this._call('clearbuffer');
 
+      try { fs.appendFileSync(DIAG_FILE, `[PRINT] rendering ${elements.length} elements...\n`); } catch (e) {}
       for (let i = 0; i < elements.length; i++) {
         const el = elements[i];
         const x = Math.round((el.x || 0) * dpm);
@@ -184,6 +195,7 @@ class TSCLibWrapper {
         catch (err) { log.error(`[TSCLIB] Element ${i} (${el.type}): ${err.message}`); }
       }
 
+      try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling printlabel...\n`); } catch (e) {}
       this._call('printlabel', '1', String(copies));
       log.info(`[TSCLIB] Printed ${copies} copies`);
       return { success: true };
