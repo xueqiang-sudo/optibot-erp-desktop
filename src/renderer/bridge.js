@@ -4,8 +4,8 @@
  * This script is injected into the Frappe web page after it loads.
  * It provides a Frappe-friendly wrapper around the electronAPI hardware APIs.
  *
- * Printing uses TSCLIB.dll via FFI — Windows system fonts (SimSun/宋体) are used,
- * no dependency on printer flash-stored fonts. Bold text is supported.
+ * Printing uses pure JS TSPL generation + Windows Spooler RAW mode.
+ * Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx).
  */
 
 (function () {
@@ -142,7 +142,7 @@
 
     /**
      * Print a label by sending a structured config to the main process.
-     * The main process uses TSCLIB.dll to render the label with Windows fonts.
+     * The main process generates TSPL commands and sends them via Spooler RAW mode.
      *
      * @param {Object} labelConfig - Structured label configuration
      * @returns {Promise<{success: boolean}>}
@@ -186,7 +186,7 @@
 
     /**
      * Build a structured label configuration from a JSON description.
-     * The config is sent to the main process where TSCLIB.dll renders it.
+     * The config is sent to the main process which generates TSPL commands.
      *
      * @param {Object} options
      * @param {number} options.width - Label width in mm
@@ -284,7 +284,7 @@
 
     /**
      * Print a label from a JSON description.
-     * Converts JSON → structured config → sends to main process for TSCLIB.dll rendering.
+     * Converts JSON → structured config → sends to main process for TSPL generation + RAW printing.
      */
     async printFromJSON(json) {
       try {
@@ -412,7 +412,7 @@
         <div style="background:#fff;border-radius:12px;padding:0;min-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;">⏳ 正在打印...</div>
           <div style="padding:20px 24px;text-align:center;">
-            <div style="margin-bottom:12px;font-size:14px;color:#333;">正在通过 TSCLIB 驱动打印标签</div>
+            <div style="margin-bottom:12px;font-size:14px;color:#333;">正在生成 TSPL 指令并发送打印</div>
             <div style="font-size:13px;color:#666;margin-bottom:16px;">${printerName}</div>
             <div style="display:inline-block;width:40px;height:40px;border:4px solid #e0e0e0;border-top:4px solid #ff9800;border-radius:50%;animation:optibot-spin 1s linear infinite;"></div>
             <style>@keyframes optibot-spin { to { transform: rotate(360deg); } }</style>
@@ -526,11 +526,11 @@
             <button id="optibot-printer-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
           </div>
           <div style="padding:16px 24px;max-height:500px;overflow-y:auto;">
-            <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">✅ 已安装的打印机 (TSCLIB 驱动打印)</div>
+            <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">✅ 已安装的打印机 (TSPL 指令打印)</div>
             ${printerHtml}
             <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
-              <b>提示：</b>通过 TSCLIB.dll 直接调用 Windows 驱动打印。
-              中文使用 Windows 系统字体 SimSun（宋体），不依赖打印机字库。支持粗体。
+              <b>提示：</b>通过纯 JS 生成 TSPL 指令，经 Windows Spooler RAW 模式直接打印。
+              中文使用打印机内置字库（如 CHK、SimsunEx），在 TEXT 指令中直接引用字库名称。
             </div>
           </div>
           <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">

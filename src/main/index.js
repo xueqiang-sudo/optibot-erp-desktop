@@ -495,8 +495,8 @@ function initServices() {
     log.error('Printer error:', error);
   });
 
-  // TSCLIB.dll is pre-loaded in initUSBWatcher() — no font preloading needed
-  // Chinese text uses Windows system font SimSun (宋体) via windowsfontUnicode()
+  // TSPL commands generated in pure JS — no DLL or font preloading needed
+  // Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx) referenced in TEXT commands
 
   printerService.initUSBWatcher();
 

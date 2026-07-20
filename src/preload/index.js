@@ -175,11 +175,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * Label Printer API (TSC via TSCLIB.dll, Windows system fonts)
+   * Label Printer API (TSC via TSPL RAW mode)
    *
    * Printers are discovered through the Windows print driver (must be installed in Windows).
-   * Printing is done via TSCLIB.dll FFI — uses Windows system fonts (SimSun/宋体),
-   * no dependency on printer flash-stored fonts. Bold text is supported.
+   * Printing uses pure JS TSPL generation + Windows Spooler RAW mode.
+   * Chinese text uses printer-stored fonts referenced in TEXT commands.
    *
    * Usage:
    *   const printers = await window.electronAPI.printer.listPrinters();
@@ -198,9 +198,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listPrinters: () => ipcRenderer.invoke('printer:list'),
 
     /**
-     * Print a label using structured configuration (TSCLIB.dll via FFI).
-     * Text rendering uses Windows system fonts — no printer font dependency.
-     * Bold text is supported via the bold property on text elements.
+     * Print a label using structured configuration (TSPL via Spooler RAW).
+     * Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx).
+     * 
      *
      * @param {string} printerId - Windows printer name from listPrinters()
      * @param {Object} labelConfig - Structured label configuration

@@ -1,13 +1,20 @@
 /**
  * Label Printer Service - Windows Spooler API Raw Printing (TSPL)
  *
- * Sends TSPL commands to TSC label printers through the Windows print
- * driver using the Spooler API in RAW mode.
+ * Generates TSPL command strings from JSON label configurations and sends
+ * them to TSC label printers through the Windows print driver using the
+ * Spooler API in RAW mode.
+ *
+ * Architecture:
+ * 1. JSON label config → generateTSPL() → complete TSPL command string
+ * 2. TSPL string → sendRaw() → Windows Spooler API (winspool.drv) → printer
+ *
+ * No DLL dependency. Pure JavaScript TSPL generation + PowerShell RAW print.
  *
  * TSPL is TSC's native printer language, so the TSC Windows driver
  * passes TSPL data directly to the printer without modification.
  *
- * Chinese text uses fonts stored on the printer's flash drive (e.g., "SimsunEx").
+ * Chinese text uses fonts stored on the printer's flash drive (e.g., "CHK", "SimsunEx").
  * The font is referenced directly by name in TEXT commands — no separate
  * font mapping step is needed.
  *
@@ -22,8 +29,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const log = require('electron-log');
-const iconv = require('iconv-lite');
-const TSCLibWrapper = require('./tsclib-wrapper');
+const { generateTSPL } = require('./tspl-converter');
 
 // PowerShell path (available on all modern Windows systems)
 const POWERSHELL = 'powershell.exe';
@@ -35,9 +41,6 @@ const POLL_INTERVAL = 5000;
 // Timeout for PowerShell commands (ms)
 const LIST_TIMEOUT = 10000;
 const PRINT_TIMEOUT = 15000;
-
-// TSPL does not need a separate font mapping command.
-// Chinese fonts are referenced directly by name (e.g., "SimsunEx") in TEXT commands.
 
 // Temp directory for PowerShell scripts
 const TEMP_DIR = os.tmpdir();
@@ -65,10 +68,10 @@ try {
  * The script:
  * 1. Defines P/Invoke signatures for winspool.drv functions
  * 2. Decodes base64-encoded raw data
- * 3. Opens the printer, starts a RAW doc, writes data, ends doc, closes printer
+ * 3. Opens the printer, starts a RAW doc, writes data, ends doc, close printer
  *
  * @param {string} printerName - Windows printer name
- * @param {string} base64Data - Base64-encoded UTF-8 ZPL data
+ * @param {string} base64Data - Base64-encoded UTF-8 TSPL data
  * @param {string} docName - Document name for the print spooler
  * @returns {string} PowerShell script
  */
@@ -174,9 +177,6 @@ class PrinterService extends EventEmitter {
     this.pollTimer = null;
     this.polling = false;
 
-    // TSCLIB.dll wrapper for direct DLL printing
-    this.tsclib = new TSCLibWrapper();
-
     // Bind methods
     this._pollPrinters = this._pollPrinters.bind(this);
   }
@@ -189,14 +189,6 @@ class PrinterService extends EventEmitter {
     if (this.pollTimer) return;
 
     log.info('[PrinterService] Starting printer polling (interval: %dms)', POLL_INTERVAL);
-
-    // Pre-load TSCLIB.dll
-    try {
-      this.tsclib.load();
-      log.info('[PrinterService] TSCLIB.dll loaded successfully');
-    } catch (err) {
-      log.error('[PrinterService] TSCLIB.dll load failed:', err.message);
-    }
 
     // Do an initial scan
     this._pollPrinters();
@@ -264,34 +256,12 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Send TSPL data to the printer via Windows Spooler API (RAW mode).
+   * Print a label by generating TSPL commands in pure JavaScript and sending
+   * them to the printer via the Windows Spooler API in RAW mode.
    *
-   * TSPL is TSC's native printer language. Chinese fonts are referenced
-   * directly by name (e.g., "SimsunEx") in TEXT commands — no separate font
-   * mapping step is needed.
-   *
-   * @param {string} printerId - Windows printer name
-   * @param {string} tsplData - Complete TSPL command string
-   * @returns {Promise<{success: boolean}>}
-   */
-  async printTSPL(printerId, tsplData) {
-    log.info(`[PrinterService] Printing TSPL to "${printerId}" (${tsplData.length} chars)`);
-
-    // Send the TSPL data with timeout
-    const timeoutMs = PRINT_TIMEOUT;
-    await Promise.race([
-      this.sendRaw(printerId, tsplData),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
-      ),
-    ]);
-    return { success: true };
-  }
-
-  /**
-   * Print a label using TSCLIB.dll (Node.js direct FFI via koffi).
-   * Uses Windows system fonts (SimSun), no printer font dependency.
-   * Bold text is supported.
+   * Replaces the former TSCLIB.dll FFI path with:
+   * 1. generateTSPL(config) → complete TSPL command string
+   * 2. sendRaw(printerName, tsplString) → Spooler API RAW write
    *
    * @param {string} printerId - Windows printer name
    * @param {Object} labelConfig - Structured label configuration
@@ -300,14 +270,46 @@ class PrinterService extends EventEmitter {
   async printLabel(printerId, labelConfig) {
     const printer = this.knownPrinters.get(printerId);
     const printerName = printer ? printer.name : printerId;
-    log.info(`[PrinterService] Printing via TSCLIB.dll to "${printerName}"`);
+    log.info(`[PrinterService] Printing label to "${printerName}" (TSPL via Spooler RAW)`);
 
     const elCount = labelConfig.elements ? labelConfig.elements.length : 0;
     log.info(`[PrinterService] Label: ${labelConfig.width}×${labelConfig.height}mm, ${elCount} elements, ${labelConfig.copies || 1} copies`);
 
-    const result = await this.tsclib.printLabel(printerName, labelConfig);
-    log.info('[PrinterService] TSCLIB print completed');
-    return result;
+    // Step 1: Generate TSPL command string from JSON config
+    const tsplData = generateTSPL(labelConfig);
+
+    // Step 2: Send raw TSPL to printer via Windows Spooler API
+    const timeoutMs = PRINT_TIMEOUT;
+    await Promise.race([
+      this.sendRaw(printerName, tsplData),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
+      ),
+    ]);
+
+    log.info('[PrinterService] Label print completed');
+    return { success: true };
+  }
+
+  /**
+   * Send TSPL data to the printer via Windows Spooler API (RAW mode).
+   * Convenience wrapper around sendRaw() with timeout.
+   *
+   * @param {string} printerId - Windows printer name
+   * @param {string} tsplData - Complete TSPL command string
+   * @returns {Promise<{success: boolean}>}
+   */
+  async printTSPL(printerId, tsplData) {
+    log.info(`[PrinterService] Printing TSPL to "${printerId}" (${tsplData.length} chars)`);
+
+    const timeoutMs = PRINT_TIMEOUT;
+    await Promise.race([
+      this.sendRaw(printerId, tsplData),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
+      ),
+    ]);
+    return { success: true };
   }
 
   /**
@@ -320,7 +322,7 @@ class PrinterService extends EventEmitter {
    * 3. Clean up temp file after execution
    *
    * @param {string} printerId - Windows printer name
-   * @param {string} data - Data string to send (ZPL commands)
+   * @param {string} data - TSPL command string
    * @returns {Promise<void>}
    */
   async sendRaw(printerId, data) {
@@ -382,9 +384,6 @@ class PrinterService extends EventEmitter {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
-    }
-    if (this.tsclib) {
-      this.tsclib.close();
     }
     this.knownPrinters.clear();
     this.removeAllListeners();
