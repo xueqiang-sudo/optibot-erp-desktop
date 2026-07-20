@@ -389,7 +389,15 @@ function registerIPCHandlers() {
   });
 
   ipcMain.handle('printer:print-label', async (_event, printerId, labelConfig) => {
-    return await printerService.printLabel(printerId, labelConfig);
+    try {
+      log.info(`[IPC] printer:print-label called for "${printerId}"`);
+      const result = await printerService.printLabel(printerId, labelConfig);
+      log.info(`[IPC] printer:print-label completed successfully`);
+      return result;
+    } catch (err) {
+      log.error(`[IPC] printer:print-label failed:`, err.message);
+      throw err;
+    }
   });
 
   ipcMain.handle('printer:get-status', () => {
