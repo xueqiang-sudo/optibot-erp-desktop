@@ -199,7 +199,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /**
      * Print a label using structured configuration (TSPL via Spooler RAW).
-     * Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx).
+     * Chinese text uses printer-stored fonts (e.g., AC.TTF, SimsunEx).
      * 
      *
      * @param {string} printerId - Windows printer name from listPrinters()

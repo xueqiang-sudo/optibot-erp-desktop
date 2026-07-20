@@ -5,7 +5,7 @@
  * It provides a Frappe-friendly wrapper around the electronAPI hardware APIs.
  *
  * Printing uses pure JS TSPL generation + Windows Spooler RAW mode.
- * Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx).
+ * Chinese text uses printer-stored fonts (e.g., AC.TTF, SimsunEx).
  */
 
 (function () {
@@ -216,7 +216,7 @@
               bold: !!el.bold,
               rotation: el.rotation || 0,
               chinese: el.chinese,
-              font_name: el.font_name || 'CHK',
+              font_name: el.font_name || 'AC.TTF',
             };
 
           case 'barcode':
@@ -264,7 +264,7 @@
               cell_font_size: el.cell_font_size || 16,
               header_font_size: el.header_font_size || 20,
               show_header: el.show_header !== false,
-              font_name: el.font_name || 'CHK',
+              font_name: el.font_name || 'AC.TTF',
             };
 
           default:
@@ -530,7 +530,7 @@
             ${printerHtml}
             <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
               <b>提示：</b>通过纯 JS 生成 TSPL 指令，经 Windows Spooler RAW 模式直接打印。
-              中文使用打印机内置字库（如 CHK、SimsunEx），在 TEXT 指令中直接引用字库名称。
+              中文使用打印机内置字库（如 AC.TTF、SimsunEx），在 TEXT 指令中直接引用字库名称。
             </div>
           </div>
           <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">

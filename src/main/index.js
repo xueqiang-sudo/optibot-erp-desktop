@@ -496,7 +496,7 @@ function initServices() {
   });
 
   // TSPL commands generated in pure JS — no DLL or font preloading needed
-  // Chinese text uses printer-stored fonts (e.g., CHK, SimsunEx) referenced in TEXT commands
+  // Chinese text uses printer-stored fonts (e.g., AC.TTF, SimsunEx) referenced in TEXT commands
 
   printerService.initUSBWatcher();
 

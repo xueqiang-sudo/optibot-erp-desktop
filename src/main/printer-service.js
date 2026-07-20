@@ -14,7 +14,7 @@
  * TSPL is TSC's native printer language, so the TSC Windows driver
  * passes TSPL data directly to the printer without modification.
  *
- * Chinese text uses fonts stored on the printer's flash drive (e.g., "CHK", "SimsunEx").
+ * Chinese text uses fonts stored on the printer's flash drive (e.g., "AC.TTF", "SimsunEx").
  * The font is referenced directly by name in TEXT commands — no separate
  * font mapping step is needed.
  *
