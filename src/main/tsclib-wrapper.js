@@ -215,12 +215,18 @@ class TSCLibWrapper {
       }
       case 'barcode': {
         if (el.barcodeType === 'QR') { this._renderElement({ ...el, type: 'qrcode' }, x, y, dpm); return; }
-        this._call('barcode', String(x), String(y), '128', String(el.height || 60), '1', '0', '2', '2', el.content || '');
+        const bc = (el.content || '').replace(/"/g, '""');
+        const bh = el.height || 60;
+        // Use sendcommand (raw TSPL) — DLL barcode() can crash
+        this._call('sendcommand', `BARCODE ${x},${y},"128",${bh},1,0,2,2,"${bc}"`);
         break;
       }
       case 'qrcode': {
-        let c = el.content || ''; if (el.gs1) c = '>8' + c;
-        this._call('qrcode', String(x), String(y), 'L', String(el.size || 6), 'A', '0', c, '');
+        let qc = el.content || ''; if (el.gs1) qc = '>8' + qc;
+        qc = qc.replace(/"/g, '""');
+        const qs = el.size || 6;
+        // Use sendcommand (raw TSPL) — DLL qrcode() crashes on some inputs
+        this._call('sendcommand', `QRCODE ${x},${y},L,${qs},A,0,"${qc}"`);
         break;
       }
       case 'line': {
