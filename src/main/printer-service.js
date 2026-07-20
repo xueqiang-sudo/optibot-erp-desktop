@@ -306,7 +306,7 @@ class PrinterService extends EventEmitter {
       );
 
       // UTF-8 BOM ensures PowerShell reads the file correctly
-      const BOM = '';
+      const BOM = '﻿';
       fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
 
       const args = [...POWERSHELL_ARGS, '-File', scriptFile];

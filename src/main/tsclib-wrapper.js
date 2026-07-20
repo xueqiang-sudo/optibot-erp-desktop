@@ -63,8 +63,9 @@ function runPowerShell(script, timeout = PRINT_TIMEOUT) {
       `optibot-tsc-${process.pid}-${Date.now()}.ps1`
     );
 
-    // UTF-8 BOM for correct PowerShell encoding
-    const BOM = '';
+    // UTF-8 BOM ensures PowerShell correctly detects file encoding
+    // Without BOM, PowerShell uses system code page → Chinese chars become mojibake
+    const BOM = '﻿';
     fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
 
     const args = [...POWERSHELL_ARGS, '-File', scriptFile];
