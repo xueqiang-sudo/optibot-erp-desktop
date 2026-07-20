@@ -13,7 +13,7 @@
  * - Conversion: dots = mm × (dpi / 25.4)
  *
  * Font handling:
- * - Chinese text uses printer-stored fonts (e.g., "AC.TTF", "SimsunEx")
+ * - Chinese text uses printer-stored fonts (e.g., "SourceHa.TTF", "SimsunEx")
  * - Font name is referenced directly in TEXT commands
  * - No separate font download/mapping step needed
  */
@@ -123,7 +123,7 @@ function renderElement(el, x, y, dpm) {
  *
  * TSPL TEXT command: TEXT x,y,"font",rotation,xMul,yMul,"content"
  * - x,y: position in dots
- * - font: printer-stored font name (e.g., "AC.TTF", "SimsunEx")
+ * - font: printer-stored font name (e.g., "SourceHa.TTF", "SimsunEx")
  * - rotation: 0/90/180/270
  * - xMul,yMul: font size multipliers (acts as point size)
  * - content: text content (double quotes escaped as "")
@@ -138,7 +138,7 @@ function renderText(el, x, y) {
   if (!content) return [];
 
   const fontSize = Math.max(8, el.font_size || 24);
-  const fontName = el.font_name || 'AC.TTF';
+  const fontName = el.font_name || 'SourceHa.TTF';
   const rotation = el.rotation || 0;
   const escaped = content.replace(/"/g, '""');
 
@@ -253,7 +253,7 @@ function renderTable(el, tx, ty, dpm) {
   const cellFontSize = el.cell_font_size || 16;
   const headerFontSize = el.header_font_size || 20;
   const showHeader = el.show_header !== false;
-  const fontName = el.font_name || 'AC.TTF';
+  const fontName = el.font_name || 'SourceHa.TTF';
 
   // Compute column widths in dots
   const colWidths = cols.map((c) => Math.round((c.width || 20) * dpm));
