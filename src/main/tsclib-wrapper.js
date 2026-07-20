@@ -109,7 +109,6 @@ class TSCLibWrapper {
       ['clearbuffer', 'int', [],                                                   29],
       ['printlabel',  'int', ['str','str'],                                       104],
       ['windowsfont', 'int', ['int','int','int','int','int','int','int','str','str'], 155],
-      ['windowsfontUnicode', 'int', ['int','int','int','int','int','int','int','str','str16'], 162],
       ['barcode',     'int', ['str','str','str','str','str','str','str','str','str'], 24],
       ['qrcode',      'int', ['str','str','str','str','str','str','str','str'],   107],
       ['sendcommand',    'int', ['str'],                                          115],
@@ -211,21 +210,8 @@ class TSCLibWrapper {
         const c = el.content || ''; if (!c) return;
         const h = Math.max(8, el.font_size || 24);
         const fontName = el.font_name || 'SimSun';
-
-        // Try multiple methods to render text:
-        // Method 1: windowsfont (ANSI) — works for English/ASCII only
-        const hasNonAscii = /[^\x00-\x7F]/.test(c);
-        if (!hasNonAscii) {
-          const r1 = this._call('windowsfont', x, y, h, h, el.bold ? 1 : 0, 0, 0, 'Arial', c);
-          if (r1 === 1) break; // success
-        }
-
-        // Method 2: windowsfontUnicode (UTF-16) — for Chinese text
-        const r2 = this._call('windowsfontUnicode', x, y, h, h, el.bold ? 1 : 0, 0, 0, fontName, c);
-        if (r2 === 1) break; // success
-
-        // Method 3: windowsfont with SimSun (ANSI encoding) — last resort
-        this._call('windowsfont', x, y, h, h, el.bold ? 1 : 0, 0, 0, fontName, c);
+        const bold = el.bold ? 1 : 0;
+        this._call('windowsfont', x, y, h, h, bold, 0, 0, fontName, c);
         break;
       }
       case 'barcode': {
@@ -289,8 +275,7 @@ class TSCLibWrapper {
         const h = cols[c].header || '';
         if (h) {
           const tw2 = ew(h, hfs), ox = Math.max(2, Math.round((cw[c] - tw2) / 2));
-          const tr = this._call('windowsfontUnicode', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, h);
-          if (tr === 0) this._call('windowsfont', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, h);
+          this._call('windowsfont', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, h);
         }
         hx += cw[c];
       }
@@ -310,8 +295,7 @@ class TSCLibWrapper {
           else if (al === 'center') ox = Math.max(2, Math.round((cellW - tw2) / 2));
           else if (al === 'right') ox = Math.max(2, cellW - tw2 - 4);
           else ox = 2;
-          const cr = this._call('windowsfontUnicode', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, raw);
-          if (cr === 0) this._call('windowsfont', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, raw);
+          this._call('windowsfont', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, raw);
         }
         cx += cw[c];
       }
