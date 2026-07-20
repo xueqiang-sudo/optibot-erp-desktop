@@ -2,11 +2,19 @@
  * OptiBot ERP Desktop Application - Main Process Entry Point
  */
 
+// ★ Early diagnostic — before ANY module loading
+const _diagFile = require('path').join(require('os').tmpdir(), 'optibot-startup-diag.txt');
+const _diag = (msg) => { try { require('fs').appendFileSync(_diagFile, `[${new Date().toISOString()}] ${msg}\n`); } catch (e) {} };
+_diag('=== App startup begin ===');
+
 const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+_diag('electron loaded');
 const path = require('path');
 const fs = require('fs');
 const log = require('electron-log');
+_diag('electron-log loaded');
 const Store = require('electron-store');
+_diag('electron-store loaded');
 
 // ★ Global flag shared across modules
 global.isQuitting = false;
@@ -14,10 +22,15 @@ global.isQuitting = false;
 // ★ Remove menu BEFORE app ready
 Menu.setApplicationMenu(null);
 
+_diag('loading scale-service...');
 const ScaleService = require('./scale-service');
+_diag('loading printer-service...');
 const PrinterService = require('./printer-service');
+_diag('loading tray...');
 const TrayManager = require('./tray');
+_diag('loading updater...');
 const UpdaterService = require('./updater');
+_diag('=== All modules loaded ===');
 
 // ─── Configuration ───────────────────────────────────────────────
 const FRAPPE_URL = 'http://erp.optibot.cn:8080/';

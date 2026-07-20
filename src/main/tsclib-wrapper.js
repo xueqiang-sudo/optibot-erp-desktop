@@ -8,7 +8,11 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const log = require('electron-log');
+
+// Diagnostic file in %TEMP% (always writable on Windows)
+const DIAG_FILE = path.join(os.tmpdir(), 'tsclib-diag.txt');
 
 function getDllPath() {
   let base;
@@ -43,11 +47,13 @@ class TSCLibWrapper {
     if (this._loaded) return;
 
     const dllPath = getDllPath();
-    const diagFile = path.join(path.dirname(process.execPath || __dirname), 'tsclib-diag.txt');
+
+    // Clear previous diag file
+    try { fs.writeFileSync(DIAG_FILE, '', 'utf-8'); } catch (e) { /* ignore */ }
 
     const diag = (msg) => {
       log.info(`[TSCLIB] ${msg}`);
-      try { fs.appendFileSync(diagFile, `[${new Date().toISOString()}] ${msg}\n`, 'utf-8'); } catch (e) { /* ignore */ }
+      try { fs.appendFileSync(DIAG_FILE, `[${new Date().toISOString()}] ${msg}\n`, 'utf-8'); } catch (e) { /* ignore */ }
     };
 
     diag(`=== TSCLIB Diagnostic Start ===`);
