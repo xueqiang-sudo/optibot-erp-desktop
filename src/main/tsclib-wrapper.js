@@ -1,25 +1,14 @@
 /**
- * TSCLIB.dll Wrapper — Node.js FFI via koffi
+ * TSCLIB.dll Wrapper — Node.js FFI via koffi (with diagnostic)
  *
- * DLL is loaded ONCE at app startup. Function calls are direct — no PowerShell,
- * no process spawning, no compilation overhead.
- *
- * Text rendering uses Windows system fonts (SimSun/宋体) via windowsfontUnicode(),
- * no dependency on printer flash-stored fonts. Bold text is supported.
- *
- * DLL export names verified via objdump — all plain C names.
- * Signatures decoded from .lib C++ mangled names.
- *
- * IMPORTANT: Run `npm install` on the Windows target machine to get the correct
- * koffi binary (@koromix/koffi-win32-x64).
+ * DLL loaded once at startup. On first load, calls dllversion() as a
+ * safe diagnostic (no params, no port needed) to verify koffi + DLL work.
+ * If the diagnostic crashes, we know it's a koffi/DLL compatibility issue.
  */
 
-const koffi = require('koffi');
 const path = require('path');
 const fs = require('fs');
 const log = require('electron-log');
-
-// ─── DLL Path Resolution ──────────────────────────────────────────
 
 function getDllPath() {
   let base;
@@ -34,48 +23,80 @@ function getDllPath() {
   return path.join(base, 'TSCLIB.dll');
 }
 
-// ─── TSCLibWrapper Class ──────────────────────────────────────────
-
 class TSCLibWrapper {
   constructor() {
     this._lib = null;
     this._loaded = false;
     this._portOpen = false;
     this._printing = false;
-
-    // Bound DLL functions
     this._fn = {};
   }
 
   /**
-   * Load TSCLIB.dll and bind all function signatures.
-   * Called once at app startup. DLL stays loaded for the app lifetime.
-   * @throws {Error} if DLL cannot be loaded or key functions fail to bind
+   * Load DLL and bind functions. Called once at startup.
+   * Step 1: require('koffi') — if this crashes, koffi binary is bad
+   * Step 2: koffi.load(dll) — if this crashes, DLL is unloadable
+   * Step 3: dllversion() — if this crashes, calling convention is wrong
+   * Step 4: bind all other functions
    */
   load() {
     if (this._loaded) return;
 
     const dllPath = getDllPath();
-    log.info(`[TSCLIB] Loading DLL: ${dllPath}`);
+    const diagFile = path.join(path.dirname(process.execPath || __dirname), 'tsclib-diag.txt');
+
+    const diag = (msg) => {
+      log.info(`[TSCLIB] ${msg}`);
+      try { fs.appendFileSync(diagFile, `[${new Date().toISOString()}] ${msg}\n`, 'utf-8'); } catch (e) { /* ignore */ }
+    };
+
+    diag(`=== TSCLIB Diagnostic Start ===`);
+    diag(`DLL path: ${dllPath}`);
+    diag(`DLL exists: ${fs.existsSync(dllPath)}`);
 
     if (!fs.existsSync(dllPath)) {
       throw new Error(`TSCLIB.dll 不存在: ${dllPath}`);
     }
 
+    const dllSize = fs.statSync(dllPath).size;
+    diag(`DLL size: ${dllSize} bytes`);
+
+    // Step 1: Load koffi module
+    let koffi;
     try {
-      this._lib = koffi.load(dllPath);
-      log.info('[TSCLIB] DLL loaded successfully');
+      diag('Step 1: require("koffi")...');
+      koffi = require('koffi');
+      diag(`Step 1 OK: koffi loaded`);
     } catch (err) {
-      log.error(`[TSCLIB] Failed to load DLL: ${err.message}`);
-      throw new Error(`TSCLIB.dll 加载失败: ${err.message}\n路径: ${dllPath}`);
+      diag(`Step 1 FAILED: ${err.message}`);
+      throw new Error(`koffi 模块加载失败: ${err.message}`);
     }
 
-    // Bind functions using plain export names (verified via objdump)
-    // Signatures decoded from .lib mangled names:
-    //   setup: 7× char*    barcode: 9× char*    qrcode: 8× char*
-    //   windowsfontUnicode: 7× int + char* fontName + wchar_t* text
+    // Step 2: Load DLL
+    try {
+      diag('Step 2: koffi.load(dll)...');
+      this._lib = koffi.load(dllPath);
+      diag('Step 2 OK: DLL loaded');
+    } catch (err) {
+      diag(`Step 2 FAILED: ${err.message}`);
+      throw new Error(`TSCLIB.dll 加载失败: ${err.message}`);
+    }
+
+    // Step 3: Diagnostic test — call dllversion() (no params, safe)
+    try {
+      diag('Step 3: binding dllversion()...');
+      const dllversion = this._lib.func('dllversion', 'str', []);
+      diag('Step 3a: dllversion bound, calling...');
+      const version = dllversion();
+      diag(`Step 3 OK: DLL version = "${version}"`);
+    } catch (err) {
+      diag(`Step 3 FAILED: ${err.message}`);
+      throw new Error(`TSCLIB.dll 诊断调用失败: ${err.message}`);
+    }
+
+    // Step 4: Bind all functions
+    diag('Step 4: binding all functions...');
     const bindings = [
-      // [name, returnType, paramTypes[], ordinal]
       ['openport',    'int', ['str'],                                             92],
       ['closeport',   'int', [],                                                   33],
       ['setup',       'int', ['str','str','str','str','str','str','str'],         127],
@@ -91,282 +112,171 @@ class TSCLibWrapper {
       ['nobackfeed',  'int', [],                                                   85],
     ];
 
-    let bound = 0;
-    let failed = 0;
-
+    let bound = 0, failed = 0;
     for (const [name, retType, params, ordinal] of bindings) {
       try {
         this._fn[name] = this._lib.func(name, retType, params);
-        log.info(`[TSCLIB] Bound: ${name}(${params.join(', ')}) → ${retType}`);
+        diag(`  Bound: ${name}`);
         bound++;
       } catch (err) {
-        // Try ordinal fallback
         try {
           this._fn[name] = this._lib.func(ordinal, retType, params);
-          log.info(`[TSCLIB] Bound ordinal ${ordinal}: ${name}`);
+          diag(`  Bound ordinal: ${name}`);
           bound++;
         } catch (err2) {
-          log.error(`[TSCLIB] Failed to bind: ${name} — ${err.message}`);
+          diag(`  FAILED: ${name} — ${err.message}`);
           failed++;
         }
       }
     }
 
-    log.info(`[TSCLIB] Binding complete: ${bound} OK, ${failed} failed`);
+    diag(`Step 4 done: ${bound} bound, ${failed} failed`);
+    diag(`=== Diagnostic Complete ===`);
 
     if (!this._fn.openport) {
-      throw new Error('TSCLIB.dll 关键函数绑定失败，无法打印');
+      throw new Error('TSCLIB 关键函数绑定失败');
     }
 
     this._loaded = true;
   }
 
-  /**
-   * Safe DLL call with logging and error handling.
-   */
   _call(name, ...args) {
     const fn = this._fn[name];
     if (!fn) throw new Error(`TSCLIB 函数 ${name} 未绑定`);
-
     log.debug(`[TSCLIB] → ${name}(${args.map(a => typeof a === 'string' ? `"${a.substring(0, 40)}"` : a).join(', ')})`);
-
     try {
       const result = fn(...args);
       log.debug(`[TSCLIB] ← ${name} = ${result}`);
       return result;
     } catch (err) {
-      log.error(`[TSCLIB] ✗ ${name} exception: ${err.message}`);
-      throw new Error(`TSCLIB ${name} 调用异常: ${err.message}`);
+      log.error(`[TSCLIB] ✗ ${name}: ${err.message}`);
+      throw new Error(`TSCLIB ${name}: ${err.message}`);
     }
   }
 
-  /**
-   * Print a label. DLL is already loaded — just open port, render, print, close.
-   *
-   * @param {string} printerName - Windows printer name
-   * @param {Object} config - Label configuration
-   * @returns {Promise<{success: boolean}>}
-   */
   async printLabel(printerName, config) {
     if (!this._loaded) this.load();
-    if (this._printing) throw new Error('打印机忙，请稍后再试');
+    if (this._printing) throw new Error('打印机忙');
 
     this._printing = true;
-
-    log.info(`[TSCLIB] Opening port: "${printerName}"`);
     const r = this._call('openport', printerName);
-    if (r !== 1) {
-      this._printing = false;
-      throw new Error(`无法打开打印机端口: "${printerName}" (返回值: ${r})`);
-    }
+    if (r !== 1) { this._printing = false; throw new Error(`无法打开端口: ${printerName}`); }
     this._portOpen = true;
 
     try {
       const { width, height, dpi = 203, copies = 1, elements } = config;
-      const dotsPerMM = dpi / 25.4;
+      const dpm = dpi / 25.4;
 
-      // Setup label
       this._call('setup', String(width), String(height), '4', '8', '0', '0', '2,0');
       this._call('clearbuffer');
 
-      // Render elements
       for (let i = 0; i < elements.length; i++) {
         const el = elements[i];
-        const x = Math.round((el.x || 0) * dotsPerMM);
-        const y = Math.round((el.y || 0) * dotsPerMM);
-        try {
-          this._renderElement(el, x, y, dotsPerMM);
-        } catch (err) {
-          log.error(`[TSCLIB] Element ${i} (${el.type}) failed: ${err.message}`);
-        }
+        const x = Math.round((el.x || 0) * dpm);
+        const y = Math.round((el.y || 0) * dpm);
+        try { this._renderElement(el, x, y, dpm); }
+        catch (err) { log.error(`[TSCLIB] Element ${i} (${el.type}): ${err.message}`); }
       }
 
-      // Print
       this._call('printlabel', '1', String(copies));
-      log.info(`[TSCLIB] Print job sent (${copies} copies)`);
+      log.info(`[TSCLIB] Printed ${copies} copies`);
       return { success: true };
     } finally {
-      if (this._portOpen) {
-        try { this._call('closeport'); } catch (e) { log.warn(`[TSCLIB] closeport: ${e.message}`); }
-        this._portOpen = false;
-      }
+      if (this._portOpen) { try { this._call('closeport'); } catch (e) {} this._portOpen = false; }
       this._printing = false;
     }
   }
 
-  // ─── Element Renderers ──────────────────────────────────────────
-
-  _renderElement(el, x, y, dotsPerMM) {
+  _renderElement(el, x, y, dpm) {
     switch (el.type) {
-      case 'text':
-      case 'date':
-        this._renderText(el, x, y);
+      case 'text': case 'date': {
+        const c = el.content || ''; if (!c) return;
+        const h = Math.max(8, el.font_size || 24), w = el.font_width || h;
+        this._call('windowsfontUnicode', x, y, h, w, el.bold ? 1 : 0, 0, 0, el.font_name || 'SimSun', c);
         break;
-      case 'barcode':
-        this._renderBarcode(el, x, y);
+      }
+      case 'barcode': {
+        if (el.barcodeType === 'QR') { this._renderElement({ ...el, type: 'qrcode' }, x, y, dpm); return; }
+        this._call('barcode', String(x), String(y), '128', String(el.height || 60), '1', '0', '2', '2', el.content || '');
         break;
-      case 'qrcode':
-        this._renderQRCode(el, x, y);
+      }
+      case 'qrcode': {
+        let c = el.content || ''; if (el.gs1) c = '>8' + c;
+        this._call('qrcode', String(x), String(y), 'L', String(el.size || 6), 'A', '0', c, '');
         break;
-      case 'line':
-        this._renderLine(el, x, y, dotsPerMM);
+      }
+      case 'line': {
+        const w = Math.round((el.width || 50) * dpm);
+        this._call('sendcommand', `BAR ${x},${y},${w},${el.thickness || 2}`);
         break;
-      case 'table':
-        this._renderTable(el, x, y, dotsPerMM);
-        break;
-      default:
-        log.warn(`[TSCLIB] Unknown element type: ${el.type}`);
+      }
+      case 'table': this._renderTable(el, x, y, dpm); break;
+      default: log.warn(`[TSCLIB] Unknown: ${el.type}`);
     }
   }
 
-  _renderText(el, x, y) {
-    const content = el.content || '';
-    if (!content) return;
-    const fontH = Math.max(8, el.font_size || el.fontSize || 24);
-    const fontW = el.font_width || el.fontWidth || fontH;
-    const bold = el.bold ? 1 : 0;
-    const fontName = el.font_name || 'SimSun';
-    this._call('windowsfontUnicode', x, y, fontH, fontW, bold, 0, 0, fontName, content);
-  }
-
-  _renderBarcode(el, x, y) {
-    if (el.barcodeType === 'QR') { this._renderQRCode(el, x, y); return; }
-    const h = String(el.height || 60);
-    this._call('barcode', String(x), String(y), '128', h, '1', '0', '2', '2', el.content || '');
-  }
-
-  _renderQRCode(el, x, y) {
-    const cell = String(el.size || 6);
-    let content = el.content || '';
-    if (el.gs1) content = '>8' + content;
-    this._call('qrcode', String(x), String(y), 'L', cell, 'A', '0', content, '');
-  }
-
-  _renderLine(el, x, y, dotsPerMM) {
-    const w = Math.round((el.width || 50) * dotsPerMM);
-    const t = el.thickness || 2;
-    this._call('sendcommand', `BAR ${x},${y},${w},${t}`);
-  }
-
-  _renderTable(el, tableX, tableY, dotsPerMM) {
-    const columns = el.columns || [];
-    const cellOverrides = el.cell_overrides || {};
-    const maxRows = el.max_rows || 6;
-    const rowHeightDots = Math.round((el.row_height || 6) * dotsPerMM);
-    const border = el.border !== false;
-    const bt = el.border_thickness || 2;
-    const defaultFS = el.cell_font_size || 16;
-    const headerFS = el.header_font_size || 20;
-    const showHeader = el.show_header !== false;
-    const fontName = el.font_name || 'SimSun';
-
-    const colW = columns.map(c => Math.round((c.width || 20) * dotsPerMM));
-    const totalW = colW.reduce((a, w) => a + w, 0);
-    const totalH = rowHeightDots * maxRows;
-
-    // Visibility & colspan maps
-    const hidden = {};
-    const span = {};
-    for (const [k, o] of Object.entries(cellOverrides)) {
-      if (o?.hidden) hidden[k] = true;
-      if (o?.colspan > 1) span[k] = o.colspan;
-    }
-    const isHidden = (r, c) => hidden[`${r},${c}`] === true;
-    const getSpan = (r, c) => span[`${r},${c}`] || 1;
-    const skipVLine = (r, c) => {
-      for (let lc = c - 1; lc >= 0; lc--) if (lc + getSpan(r, lc) > c) return true;
-      for (let rc = c; rc < columns.length; rc++) { const s = getSpan(r, rc); if (s > 1 && rc < c) return true; }
-      return isHidden(r, c - 1) && isHidden(r, c);
+  _renderTable(el, tx, ty, dpm) {
+    const cols = el.columns || [], co = el.cell_overrides || {};
+    const mr = el.max_rows || 6, rh = Math.round((el.row_height || 6) * dpm);
+    const bdr = el.border !== false, bt = el.border_thickness || 2;
+    const dfs = el.cell_font_size || 16, hfs = el.header_font_size || 20;
+    const sh = el.show_header !== false, fn = el.font_name || 'SimSun';
+    const cw = cols.map(c => Math.round((c.width || 20) * dpm));
+    const tw = cw.reduce((a, w) => a + w, 0), th = rh * mr;
+    const hid = {}, sp = {};
+    for (const [k, o] of Object.entries(co)) { if (o?.hidden) hid[k] = true; if (o?.colspan > 1) sp[k] = o.colspan; }
+    const isH = (r, c) => hid[`${r},${c}`] === true;
+    const gS = (r, c) => sp[`${r},${c}`] || 1;
+    const skipV = (r, c) => {
+      for (let l = c - 1; l >= 0; l--) if (l + gS(r, l) > c) return true;
+      for (let rc = c; rc < cols.length; rc++) { const s = gS(r, rc); if (s > 1 && rc < c) return true; }
+      return isH(r, c - 1) && isH(r, c);
     };
-
-    // Border
-    if (border) {
-      this._call('sendcommand', `BOX ${tableX},${tableY},${tableX + totalW - 1},${tableY + totalH - 1},${bt}`);
-      for (let r = 1; r < maxRows; r++) {
-        const ly = tableY + r * rowHeightDots;
-        let hasHidden = false;
-        for (let c = 0; c < columns.length; c++) if (isHidden(r, c)) { hasHidden = true; break; }
-        if (hasHidden) {
-          this._call('sendcommand', `BAR ${tableX},${ly},${totalW},${bt}`);
-        } else {
-          let lx = tableX;
-          for (let c = 0; c < columns.length; c++) { this._call('sendcommand', `BAR ${lx},${ly},${colW[c]},${bt}`); lx += colW[c]; }
-        }
+    if (bdr) {
+      this._call('sendcommand', `BOX ${tx},${ty},${tx + tw - 1},${ty + th - 1},${bt}`);
+      for (let r = 1; r < mr; r++) {
+        const ly = ty + r * rh; let hh = false;
+        for (let c = 0; c < cols.length; c++) if (isH(r, c)) { hh = true; break; }
+        if (hh) this._call('sendcommand', `BAR ${tx},${ly},${tw},${bt}`);
+        else { let lx = tx; for (let c = 0; c < cols.length; c++) { this._call('sendcommand', `BAR ${lx},${ly},${cw[c]},${bt}`); lx += cw[c]; } }
       }
-      let cx = tableX;
-      for (let c = 1; c < columns.length; c++) {
-        cx += colW[c - 1];
-        for (let r = 0; r < maxRows; r++) {
-          if (!skipVLine(r, c)) this._call('sendcommand', `BAR ${cx},${tableY + r * rowHeightDots},${bt},${rowHeightDots}`);
-        }
+      let cx = tx;
+      for (let c = 1; c < cols.length; c++) { cx += cw[c - 1]; for (let r = 0; r < mr; r++) { if (!skipV(r, c)) this._call('sendcommand', `BAR ${cx},${ty + r * rh},${bt},${rh}`); } }
+    }
+    const ew = (t, s) => { const w = Math.max(8, s); let r = 0; for (let i = 0; i < t.length; i++) { const c = t.charCodeAt(i); r += (c <= 0x7F ? 1 : c <= 0x7FF ? 2 : 3) * w; } return r; };
+    if (sh) {
+      let hx = tx; const hf = Math.max(8, hfs);
+      for (let c = 0; c < cols.length; c++) {
+        const h = cols[c].header || '';
+        if (h) { const tw2 = ew(h, hfs), ox = Math.max(2, Math.round((cw[c] - tw2) / 2)); this._call('windowsfontUnicode', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, h); }
+        hx += cw[c];
       }
     }
-
-    // Text width estimate
-    const textW = (text, fs) => {
-      const cw = Math.max(8, fs);
-      let w = 0;
-      for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        w += (code <= 0x7F ? 1 : code <= 0x7FF ? 2 : 3) * cw;
-      }
-      return w;
-    };
-
-    // Header
-    if (showHeader) {
-      let hx = tableX;
-      const hfs = Math.max(8, headerFS);
-      for (let c = 0; c < columns.length; c++) {
-        const hdr = columns[c].header || '';
-        if (hdr) {
-          const tw = textW(hdr, headerFS);
-          const ox = Math.max(2, Math.round((colW[c] - tw) / 2));
-          this._call('windowsfontUnicode', hx + ox, tableY + 2, hfs, hfs, 1, 0, 0, fontName, hdr);
-        }
-        hx += colW[c];
-      }
-    }
-
-    // Cells
-    for (let r = 0; r < maxRows; r++) {
-      const cy = tableY + r * rowHeightDots;
-      let cx = tableX;
-      for (let c = 0; c < columns.length; c++) {
-        const ov = cellOverrides[`${r},${c}`];
-        if (ov?.hidden) { cx += colW[c]; continue; }
+    for (let r = 0; r < mr; r++) {
+      const cy = ty + r * rh; let cx = tx;
+      for (let c = 0; c < cols.length; c++) {
+        const ov = co[`${r},${c}`]; if (ov?.hidden) { cx += cw[c]; continue; }
         const raw = ov?.content || '';
         if (raw) {
-          const fs = ov?.font_size || defaultFS;
-          const align = columns[c].align || 'left';
-          let cw = colW[c];
-          const cs = ov?.colspan || 1;
-          if (cs > 1) { cw = 0; for (let ci = c; ci < Math.min(c + cs, columns.length); ci++) cw += colW[ci]; }
-          const cfs = Math.max(8, fs);
-          const tw = textW(raw, fs);
-          const oy = Math.max(1, Math.round((rowHeightDots - cfs) / 2) - Math.round(cfs * 0.25));
-          let ox;
-          if (tw >= cw) ox = Math.max(0, Math.round((cw - tw) / 2));
-          else if (align === 'center') ox = Math.max(2, Math.round((cw - tw) / 2));
-          else if (align === 'right') ox = Math.max(2, cw - tw - 4);
+          const fs = ov?.font_size || dfs, al = cols[c].align || 'left';
+          let cellW = cw[c]; const cs = ov?.colspan || 1;
+          if (cs > 1) { cellW = 0; for (let ci = c; ci < Math.min(c + cs, cols.length); ci++) cellW += cw[ci]; }
+          const cf = Math.max(8, fs), tw2 = ew(raw, fs);
+          const oy = Math.max(1, Math.round((rh - cf) / 2) - Math.round(cf * 0.25));
+          let ox; if (tw2 >= cellW) ox = Math.max(0, Math.round((cellW - tw2) / 2));
+          else if (al === 'center') ox = Math.max(2, Math.round((cellW - tw2) / 2));
+          else if (al === 'right') ox = Math.max(2, cellW - tw2 - 4);
           else ox = 2;
-          this._call('windowsfontUnicode', cx + ox, cy + oy, cfs, cfs, 0, 0, 0, fontName, raw);
+          this._call('windowsfontUnicode', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, raw);
         }
-        cx += colW[c];
+        cx += cw[c];
       }
     }
   }
 
-  /**
-   * Release DLL and clean up. Called on app quit.
-   */
   close() {
-    if (this._portOpen && this._fn.closeport) {
-      try { this._call('closeport'); } catch (e) { /* ignore */ }
-      this._portOpen = false;
-    }
+    if (this._portOpen && this._fn.closeport) { try { this._call('closeport'); } catch (e) {} this._portOpen = false; }
     this._printing = false;
-    // Note: don't unload DLL — it stays loaded for app lifetime
   }
 }
 
