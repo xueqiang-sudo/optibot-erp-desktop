@@ -1,27 +1,23 @@
 /**
- * TSCLIB.dll Wrapper — PowerShell P/Invoke bridge for TSC label printing
+ * TSCLIB.dll Wrapper — Node.js FFI via koffi
  *
- * Uses PowerShell's Add-Type with [DllImport] to call TSCLIB.dll functions.
- * This approach is stable and reliable — same mechanism as the old raw TSPL printing,
- * but calling individual DLL functions instead of sending raw TSPL strings.
+ * DLL is loaded ONCE at app startup. Function calls are direct — no PowerShell,
+ * no process spawning, no compilation overhead.
  *
- * Text rendering uses Windows system fonts (SimSun/宋体) via WindowsFontUnicode(),
- * eliminating the dependency on printer flash-stored fonts.
- * Bold text is supported via the bold parameter.
+ * Text rendering uses Windows system fonts (SimSun/宋体) via windowsfontUnicode(),
+ * no dependency on printer flash-stored fonts. Bold text is supported.
  *
- * DLL function signatures verified from .lib symbol table and objdump exports.
+ * DLL export names verified via objdump — all plain C names.
+ * Signatures decoded from .lib C++ mangled names.
+ *
+ * IMPORTANT: Run `npm install` on the Windows target machine to get the correct
+ * koffi binary (@koromix/koffi-win32-x64).
  */
 
-const { execFile } = require('child_process');
+const koffi = require('koffi');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const log = require('electron-log');
-
-const POWERSHELL = 'powershell.exe';
-const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
-const TEMP_DIR = os.tmpdir();
-const PRINT_TIMEOUT = 15000;
 
 // ─── DLL Path Resolution ──────────────────────────────────────────
 
@@ -29,221 +25,173 @@ function getDllPath() {
   let base;
   try {
     const { app } = require('electron');
-    if (app.isPackaged) {
-      base = path.join(process.resourcesPath, 'tsclib', 'x64');
-    } else {
-      base = path.join(__dirname, '..', 'tsclib', 'x64');
-    }
+    base = app.isPackaged
+      ? path.join(process.resourcesPath, 'tsclib', 'x64')
+      : path.join(__dirname, '..', 'tsclib', 'x64');
   } catch {
     base = path.join(__dirname, '..', 'tsclib', 'x64');
   }
   return path.join(base, 'TSCLIB.dll');
 }
 
-// ─── PowerShell Helpers ───────────────────────────────────────────
-
-/**
- * Escape a string for PowerShell single-quoted string.
- * In PS single-quoted strings, only ' needs escaping (doubled to '').
- */
-function psEscape(str) {
-  return (str || '').replace(/'/g, "''");
-}
-
-/**
- * Run a PowerShell script via temp file.
- * @param {string} script - PowerShell script content
- * @param {number} timeout - Timeout in ms
- * @returns {Promise<string>} stdout
- */
-function runPowerShell(script, timeout = PRINT_TIMEOUT) {
-  return new Promise((resolve, reject) => {
-    const scriptFile = path.join(
-      TEMP_DIR,
-      `optibot-tsc-${process.pid}-${Date.now()}.ps1`
-    );
-
-    // UTF-8 BOM ensures PowerShell correctly detects file encoding
-    // Without BOM, PowerShell uses system code page → Chinese chars become mojibake
-    const BOM = '﻿';
-    fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
-
-    const args = [...POWERSHELL_ARGS, '-File', scriptFile];
-
-    const child = execFile(POWERSHELL, args, {
-      timeout,
-      maxBuffer: 1024 * 1024,
-      windowsHide: true,
-      encoding: 'utf-8',
-    }, (error, stdout, stderr) => {
-      try { fs.unlinkSync(scriptFile); } catch (e) { /* ignore */ }
-
-      if (error) {
-        if (error.killed) {
-          reject(new Error(`TSCLIB 打印超时 (${timeout / 1000}秒)`));
-        } else {
-          const errMsg = stderr ? stderr.trim() : error.message;
-          reject(new Error(`TSCLIB 执行失败: ${errMsg}`));
-        }
-        return;
-      }
-
-      if (stderr && stderr.trim()) {
-        log.warn('[TSCLIB] PowerShell stderr:', stderr.trim());
-      }
-
-      resolve(stdout ? stdout.trim() : '');
-    });
-  });
-}
-
 // ─── TSCLibWrapper Class ──────────────────────────────────────────
 
 class TSCLibWrapper {
   constructor() {
-    this._dllPath = getDllPath();
+    this._lib = null;
+    this._loaded = false;
+    this._portOpen = false;
     this._printing = false;
+
+    // Bound DLL functions
+    this._fn = {};
   }
 
   /**
-   * Verify DLL exists and is loadable.
-   * Called during init to catch problems early.
+   * Load TSCLIB.dll and bind all function signatures.
+   * Called once at app startup. DLL stays loaded for the app lifetime.
+   * @throws {Error} if DLL cannot be loaded or key functions fail to bind
    */
   load() {
-    if (!fs.existsSync(this._dllPath)) {
-      throw new Error(`TSCLIB.dll 不存在: ${this._dllPath}`);
+    if (this._loaded) return;
+
+    const dllPath = getDllPath();
+    log.info(`[TSCLIB] Loading DLL: ${dllPath}`);
+
+    if (!fs.existsSync(dllPath)) {
+      throw new Error(`TSCLIB.dll 不存在: ${dllPath}`);
     }
-    log.info(`[TSCLIB] DLL found at: ${this._dllPath}`);
+
+    try {
+      this._lib = koffi.load(dllPath);
+      log.info('[TSCLIB] DLL loaded successfully');
+    } catch (err) {
+      log.error(`[TSCLIB] Failed to load DLL: ${err.message}`);
+      throw new Error(`TSCLIB.dll 加载失败: ${err.message}\n路径: ${dllPath}`);
+    }
+
+    // Bind functions using plain export names (verified via objdump)
+    // Signatures decoded from .lib mangled names:
+    //   setup: 7× char*    barcode: 9× char*    qrcode: 8× char*
+    //   windowsfontUnicode: 7× int + char* fontName + wchar_t* text
+    const bindings = [
+      // [name, returnType, paramTypes[], ordinal]
+      ['openport',    'int', ['str'],                                             92],
+      ['closeport',   'int', [],                                                   33],
+      ['setup',       'int', ['str','str','str','str','str','str','str'],         127],
+      ['clearbuffer', 'int', [],                                                   29],
+      ['printlabel',  'int', ['str','str'],                                       104],
+      ['windowsfont', 'int', ['int','int','int','int','int','int','int','str','str'], 155],
+      ['windowsfontUnicode', 'int', ['int','int','int','int','int','int','int','str','str16'], 162],
+      ['barcode',     'int', ['str','str','str','str','str','str','str','str','str'], 24],
+      ['qrcode',      'int', ['str','str','str','str','str','str','str','str'],   107],
+      ['sendcommand',    'int', ['str'],                                          115],
+      ['sendcommandutf8','int', ['str'],                                          123],
+      ['formfeed',    'int', [],                                                   81],
+      ['nobackfeed',  'int', [],                                                   85],
+    ];
+
+    let bound = 0;
+    let failed = 0;
+
+    for (const [name, retType, params, ordinal] of bindings) {
+      try {
+        this._fn[name] = this._lib.func(name, retType, params);
+        log.info(`[TSCLIB] Bound: ${name}(${params.join(', ')}) → ${retType}`);
+        bound++;
+      } catch (err) {
+        // Try ordinal fallback
+        try {
+          this._fn[name] = this._lib.func(ordinal, retType, params);
+          log.info(`[TSCLIB] Bound ordinal ${ordinal}: ${name}`);
+          bound++;
+        } catch (err2) {
+          log.error(`[TSCLIB] Failed to bind: ${name} — ${err.message}`);
+          failed++;
+        }
+      }
+    }
+
+    log.info(`[TSCLIB] Binding complete: ${bound} OK, ${failed} failed`);
+
+    if (!this._fn.openport) {
+      throw new Error('TSCLIB.dll 关键函数绑定失败，无法打印');
+    }
+
+    this._loaded = true;
   }
 
   /**
-   * Print a label using TSCLIB.dll via PowerShell P/Invoke.
+   * Safe DLL call with logging and error handling.
+   */
+  _call(name, ...args) {
+    const fn = this._fn[name];
+    if (!fn) throw new Error(`TSCLIB 函数 ${name} 未绑定`);
+
+    log.debug(`[TSCLIB] → ${name}(${args.map(a => typeof a === 'string' ? `"${a.substring(0, 40)}"` : a).join(', ')})`);
+
+    try {
+      const result = fn(...args);
+      log.debug(`[TSCLIB] ← ${name} = ${result}`);
+      return result;
+    } catch (err) {
+      log.error(`[TSCLIB] ✗ ${name} exception: ${err.message}`);
+      throw new Error(`TSCLIB ${name} 调用异常: ${err.message}`);
+    }
+  }
+
+  /**
+   * Print a label. DLL is already loaded — just open port, render, print, close.
    *
    * @param {string} printerName - Windows printer name
    * @param {Object} config - Label configuration
    * @returns {Promise<{success: boolean}>}
    */
   async printLabel(printerName, config) {
-    if (this._printing) {
-      throw new Error('打印机忙，请稍后再试');
-    }
+    if (!this._loaded) this.load();
+    if (this._printing) throw new Error('打印机忙，请稍后再试');
 
     this._printing = true;
+
+    log.info(`[TSCLIB] Opening port: "${printerName}"`);
+    const r = this._call('openport', printerName);
+    if (r !== 1) {
+      this._printing = false;
+      throw new Error(`无法打开打印机端口: "${printerName}" (返回值: ${r})`);
+    }
+    this._portOpen = true;
 
     try {
       const { width, height, dpi = 203, copies = 1, elements } = config;
       const dotsPerMM = dpi / 25.4;
 
-      log.info(`[TSCLIB] Building script: ${width}×${height}mm, ${elements.length} elements, ${copies} copies`);
+      // Setup label
+      this._call('setup', String(width), String(height), '4', '8', '0', '0', '2,0');
+      this._call('clearbuffer');
 
-      // Build the complete PowerShell script
-      const script = this._buildScript(printerName, width, height, copies, elements, dotsPerMM);
-
-      // Save script for debugging
-      const appDir = path.dirname(process.execPath);
-      const debugFile = path.join(appDir, 'debug-last-tsclib.ps1');
-      try {
-        fs.writeFileSync(debugFile, script, 'utf-8');
-        log.info(`[TSCLIB] Script saved to: ${debugFile}`);
-      } catch (e) { /* ignore */ }
-
-      // Execute
-      log.info(`[TSCLIB] Executing PowerShell script (${script.length} chars)`);
-      const result = await runPowerShell(script, PRINT_TIMEOUT);
-
-      if (result === 'OK') {
-        log.info('[TSCLIB] Print job sent successfully');
-        return { success: true };
-      } else {
-        log.warn(`[TSCLIB] Unexpected output: ${result}`);
-        return { success: true };
+      // Render elements
+      for (let i = 0; i < elements.length; i++) {
+        const el = elements[i];
+        const x = Math.round((el.x || 0) * dotsPerMM);
+        const y = Math.round((el.y || 0) * dotsPerMM);
+        try {
+          this._renderElement(el, x, y, dotsPerMM);
+        } catch (err) {
+          log.error(`[TSCLIB] Element ${i} (${el.type}) failed: ${err.message}`);
+        }
       }
+
+      // Print
+      this._call('printlabel', '1', String(copies));
+      log.info(`[TSCLIB] Print job sent (${copies} copies)`);
+      return { success: true };
     } finally {
+      if (this._portOpen) {
+        try { this._call('closeport'); } catch (e) { log.warn(`[TSCLIB] closeport: ${e.message}`); }
+        this._portOpen = false;
+      }
       this._printing = false;
     }
-  }
-
-  /**
-   * Build the complete PowerShell script for a label.
-   * @private
-   */
-  _buildScript(printerName, width, height, copies, elements, dotsPerMM) {
-    // Normalize DLL path: use forward slashes to avoid C# backslash escape issues
-    const dllPath = this._dllPath.replace(/\\/g, '/');
-
-    let s = `$ErrorActionPreference = 'Stop'\n`;
-    s += `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\n`;
-
-    // ── Define P/Invoke wrappers ──
-    // TSCLibA: ANSI string marshaling (most functions)
-    // TSCLibU: Unicode string marshaling (windowsfontUnicode only)
-    s += `Add-Type -TypeDefinition @"\n`;
-    s += `using System;\n`;
-    s += `using System.Runtime.InteropServices;\n\n`;
-
-    // ANSI class — for all functions except WindowsFontUnicode
-    s += `public static class TSCLibA {\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int openport(string portName);\n\n`;
-    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int closeport();\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int setup(string w, string h, string speed, string density, string sensor, string vertical, string gap);\n\n`;
-    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int clearbuffer();\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int printlabel(string setName, string copies);\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int windowsfont(int x, int y, int fontH, int fontW, int bold, int italic, int underline, string fontName, string text);\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int barcode(string x, string y, string type, string height, string hr, string align, string rot, string narrow, string data);\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int qrcode(string x, string y, string ec, string cell, string mode, string rot, string data, string extra);\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int sendcommand(string cmd);\n\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Ansi, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int sendcommandutf8(string cmd);\n\n`;
-    s += `    [DllImport("${dllPath}", CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int formfeed();\n`;
-    s += `}\n\n`;
-
-    // Unicode class — for windowsfontUnicode (wchar_t* text)
-    s += `public static class TSCLibU {\n`;
-    s += `    [DllImport("${dllPath}", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]\n`;
-    s += `    public static extern int windowsfontUnicode(int x, int y, int fontH, int fontW, int bold, int italic, int underline, string fontName, string text);\n`;
-    s += `}\n`;
-    s += `"@\n\n`;
-
-    // ── Open port ──
-    s += `$printerName = '${psEscape(printerName)}'\n`;
-    s += `$r = [TSCLibA]::openport($printerName)\n`;
-    s += `if ($r -ne 1) { throw "openport failed for '$printerName' (returned $r)" }\n\n`;
-
-    s += `try {\n`;
-
-    // ── Setup ──
-    s += `    [TSCLibA]::setup('${width}', '${height}', '4', '8', '0', '0', '2,0') | Out-Null\n`;
-    s += `    [TSCLibA]::clearbuffer() | Out-Null\n\n`;
-
-    // ── Render elements ──
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      const x = Math.round((el.x || 0) * dotsPerMM);
-      const y = Math.round((el.y || 0) * dotsPerMM);
-
-      s += `    # Element ${i}: ${el.type}\n`;
-      s += this._renderElement(el, x, y, dotsPerMM);
-    }
-
-    // ── Print ──
-    s += `\n    [TSCLibA]::printlabel('1', '${copies}') | Out-Null\n`;
-    s += `    Write-Output 'OK'\n`;
-    s += `}\n`;
-    s += `finally {\n`;
-    s += `    [TSCLibA]::closeport() | Out-Null\n`;
-    s += `}\n`;
-
-    return s;
   }
 
   // ─── Element Renderers ──────────────────────────────────────────
@@ -252,211 +200,173 @@ class TSCLibWrapper {
     switch (el.type) {
       case 'text':
       case 'date':
-        return this._renderText(el, x, y);
+        this._renderText(el, x, y);
+        break;
       case 'barcode':
-        return this._renderBarcode(el, x, y);
+        this._renderBarcode(el, x, y);
+        break;
       case 'qrcode':
-        return this._renderQRCode(el, x, y);
+        this._renderQRCode(el, x, y);
+        break;
       case 'line':
-        return this._renderLine(el, x, y, dotsPerMM);
+        this._renderLine(el, x, y, dotsPerMM);
+        break;
       case 'table':
-        return this._renderTable(el, x, y, dotsPerMM);
+        this._renderTable(el, x, y, dotsPerMM);
+        break;
       default:
         log.warn(`[TSCLIB] Unknown element type: ${el.type}`);
-        return '';
     }
   }
 
   _renderText(el, x, y) {
     const content = el.content || '';
-    if (!content) return '';
-
+    if (!content) return;
     const fontH = Math.max(8, el.font_size || el.fontSize || 24);
     const fontW = el.font_width || el.fontWidth || fontH;
     const bold = el.bold ? 1 : 0;
     const fontName = el.font_name || 'SimSun';
-
-    return `    [TSCLibU]::windowsfontUnicode(${x}, ${y}, ${fontH}, ${fontW}, ${bold}, 0, 0, '${psEscape(fontName)}', '${psEscape(content)}') | Out-Null\n`;
+    this._call('windowsfontUnicode', x, y, fontH, fontW, bold, 0, 0, fontName, content);
   }
 
   _renderBarcode(el, x, y) {
-    if (el.barcodeType === 'QR') {
-      return this._renderQRCode(el, x, y);
-    }
-    const h = el.height || 60;
-    const content = el.content || '';
-    return `    [TSCLibA]::barcode('${x}', '${y}', '128', '${h}', '1', '0', '2', '2', '${psEscape(content)}') | Out-Null\n`;
+    if (el.barcodeType === 'QR') { this._renderQRCode(el, x, y); return; }
+    const h = String(el.height || 60);
+    this._call('barcode', String(x), String(y), '128', h, '1', '0', '2', '2', el.content || '');
   }
 
   _renderQRCode(el, x, y) {
-    const cellSize = el.size || 6;
+    const cell = String(el.size || 6);
     let content = el.content || '';
     if (el.gs1) content = '>8' + content;
-    return `    [TSCLibA]::qrcode('${x}', '${y}', 'L', '${cellSize}', 'A', '0', '${psEscape(content)}', '') | Out-Null\n`;
+    this._call('qrcode', String(x), String(y), 'L', cell, 'A', '0', content, '');
   }
 
   _renderLine(el, x, y, dotsPerMM) {
-    const lineW = Math.round((el.width || 50) * dotsPerMM);
-    const thickness = el.thickness || 2;
-    return `    [TSCLibA]::sendcommand('BAR ${x},${y},${lineW},${thickness}') | Out-Null\n`;
+    const w = Math.round((el.width || 50) * dotsPerMM);
+    const t = el.thickness || 2;
+    this._call('sendcommand', `BAR ${x},${y},${w},${t}`);
   }
 
-  /**
-   * Render table — same layout logic as old _tsplTable, but calling DLL via P/Invoke.
-   */
   _renderTable(el, tableX, tableY, dotsPerMM) {
-    let s = '';
     const columns = el.columns || [];
     const cellOverrides = el.cell_overrides || {};
     const maxRows = el.max_rows || 6;
-    const rowHeightMM = el.row_height || 6;
-    const rowHeightDots = Math.round(rowHeightMM * dotsPerMM);
+    const rowHeightDots = Math.round((el.row_height || 6) * dotsPerMM);
     const border = el.border !== false;
-    const borderThickness = el.border_thickness || 2;
-    const defaultCellFontSize = el.cell_font_size || 16;
-    const headerFontSize = el.header_font_size || 20;
+    const bt = el.border_thickness || 2;
+    const defaultFS = el.cell_font_size || 16;
+    const headerFS = el.header_font_size || 20;
     const showHeader = el.show_header !== false;
     const fontName = el.font_name || 'SimSun';
 
-    const colWidthsDots = columns.map((col) => Math.round((col.width || 20) * dotsPerMM));
-    const totalTableWidthDots = colWidthsDots.reduce((a, w) => a + w, 0);
-    const totalTableHeightDots = rowHeightDots * maxRows;
+    const colW = columns.map(c => Math.round((c.width || 20) * dotsPerMM));
+    const totalW = colW.reduce((a, w) => a + w, 0);
+    const totalH = rowHeightDots * maxRows;
 
-    // Cell visibility & colspan
-    const isCellHidden = {};
-    const cellSpan = {};
-    for (const [key, override] of Object.entries(cellOverrides)) {
-      if (override && override.hidden) isCellHidden[key] = true;
-      if (override && override.colspan > 1) cellSpan[key] = override.colspan;
+    // Visibility & colspan maps
+    const hidden = {};
+    const span = {};
+    for (const [k, o] of Object.entries(cellOverrides)) {
+      if (o?.hidden) hidden[k] = true;
+      if (o?.colspan > 1) span[k] = o.colspan;
     }
-    function cellHidden(r, c) { return isCellHidden[`${r},${c}`] === true; }
-    function getColspan(r, c) { return cellSpan[`${r},${c}`] || 1; }
-    function skipVerticalLine(r, c) {
-      for (let lc = c - 1; lc >= 0; lc--) {
-        if (lc + getColspan(r, lc) > c) return true;
-      }
-      for (let rc = c; rc < columns.length; rc++) {
-        const span = getColspan(r, rc);
-        if (span > 1 && rc < c) return true;
-      }
-      return cellHidden(r, c - 1) && cellHidden(r, c);
-    }
+    const isHidden = (r, c) => hidden[`${r},${c}`] === true;
+    const getSpan = (r, c) => span[`${r},${c}`] || 1;
+    const skipVLine = (r, c) => {
+      for (let lc = c - 1; lc >= 0; lc--) if (lc + getSpan(r, lc) > c) return true;
+      for (let rc = c; rc < columns.length; rc++) { const s = getSpan(r, rc); if (s > 1 && rc < c) return true; }
+      return isHidden(r, c - 1) && isHidden(r, c);
+    };
 
-    // Border grid
+    // Border
     if (border) {
-      const xEnd = tableX + totalTableWidthDots - 1;
-      const yEnd = tableY + totalTableHeightDots - 1;
-      s += `    [TSCLibA]::sendcommand('BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}') | Out-Null\n`;
-
+      this._call('sendcommand', `BOX ${tableX},${tableY},${tableX + totalW - 1},${tableY + totalH - 1},${bt}`);
       for (let r = 1; r < maxRows; r++) {
         const ly = tableY + r * rowHeightDots;
-        let belowHasHidden = false;
-        for (let c = 0; c < columns.length; c++) {
-          if (cellHidden(r, c)) { belowHasHidden = true; break; }
-        }
-        if (belowHasHidden) {
-          s += `    [TSCLibA]::sendcommand('BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}') | Out-Null\n`;
+        let hasHidden = false;
+        for (let c = 0; c < columns.length; c++) if (isHidden(r, c)) { hasHidden = true; break; }
+        if (hasHidden) {
+          this._call('sendcommand', `BAR ${tableX},${ly},${totalW},${bt}`);
         } else {
           let lx = tableX;
-          for (let c = 0; c < columns.length; c++) {
-            s += `    [TSCLibA]::sendcommand('BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}') | Out-Null\n`;
-            lx += colWidthsDots[c];
-          }
+          for (let c = 0; c < columns.length; c++) { this._call('sendcommand', `BAR ${lx},${ly},${colW[c]},${bt}`); lx += colW[c]; }
         }
       }
-
       let cx = tableX;
       for (let c = 1; c < columns.length; c++) {
-        cx += colWidthsDots[c - 1];
+        cx += colW[c - 1];
         for (let r = 0; r < maxRows; r++) {
-          if (!skipVerticalLine(r, c)) {
-            const vy = tableY + r * rowHeightDots;
-            s += `    [TSCLibA]::sendcommand('BAR ${cx},${vy},${borderThickness},${rowHeightDots}') | Out-Null\n`;
-          }
+          if (!skipVLine(r, c)) this._call('sendcommand', `BAR ${cx},${tableY + r * rowHeightDots},${bt},${rowHeightDots}`);
         }
       }
     }
 
-    // Text width estimation
-    function estimateTextWidth(text, fontSize) {
-      const charW = Math.max(8, fontSize);
+    // Text width estimate
+    const textW = (text, fs) => {
+      const cw = Math.max(8, fs);
       let w = 0;
       for (let i = 0; i < text.length; i++) {
         const code = text.charCodeAt(i);
-        w += (code <= 0x7F ? 1 : code <= 0x7FF ? 2 : 3) * charW;
+        w += (code <= 0x7F ? 1 : code <= 0x7FF ? 2 : 3) * cw;
       }
       return w;
-    }
+    };
 
-    // Header row
+    // Header
     if (showHeader) {
       let hx = tableX;
-      const hFontSize = Math.max(8, headerFontSize);
+      const hfs = Math.max(8, headerFS);
       for (let c = 0; c < columns.length; c++) {
-        const header = columns[c].header || '';
-        if (header) {
-          const cellW = colWidthsDots[c];
-          const textW = estimateTextWidth(header, headerFontSize);
-          const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
-          s += `    [TSCLibU]::windowsfontUnicode(${hx + offsetX}, ${tableY + 2}, ${hFontSize}, ${hFontSize}, 1, 0, 0, '${psEscape(fontName)}', '${psEscape(header)}') | Out-Null\n`;
+        const hdr = columns[c].header || '';
+        if (hdr) {
+          const tw = textW(hdr, headerFS);
+          const ox = Math.max(2, Math.round((colW[c] - tw) / 2));
+          this._call('windowsfontUnicode', hx + ox, tableY + 2, hfs, hfs, 1, 0, 0, fontName, hdr);
         }
-        hx += colWidthsDots[c];
+        hx += colW[c];
       }
     }
 
-    // Cell content
+    // Cells
     for (let r = 0; r < maxRows; r++) {
-      const cellY = tableY + r * rowHeightDots;
-      let cellX = tableX;
+      const cy = tableY + r * rowHeightDots;
+      let cx = tableX;
       for (let c = 0; c < columns.length; c++) {
-        const key = `${r},${c}`;
-        const override = cellOverrides[key];
-
-        if (override && override.hidden) {
-          cellX += colWidthsDots[c];
-          continue;
-        }
-
-        const rawContent = override ? override.content || '' : '';
-        if (rawContent) {
-          const fontSize = (override && override.font_size) || defaultCellFontSize;
+        const ov = cellOverrides[`${r},${c}`];
+        if (ov?.hidden) { cx += colW[c]; continue; }
+        const raw = ov?.content || '';
+        if (raw) {
+          const fs = ov?.font_size || defaultFS;
           const align = columns[c].align || 'left';
-          let cellW = colWidthsDots[c];
-          const colspan = (override && override.colspan) || 1;
-          if (colspan > 1) {
-            cellW = 0;
-            for (let ci = c; ci < Math.min(c + colspan, columns.length); ci++) {
-              cellW += colWidthsDots[ci];
-            }
-          }
-
-          const cFontSize = Math.max(8, fontSize);
-          const textW = estimateTextWidth(rawContent, fontSize);
-          const ascentShift = Math.round(cFontSize * 0.25);
-          const textOffsetY = Math.max(1, Math.round((rowHeightDots - cFontSize) / 2) - ascentShift);
-
-          let offsetX;
-          if (textW >= cellW) {
-            offsetX = Math.max(0, Math.round((cellW - textW) / 2));
-          } else if (align === 'center') {
-            offsetX = Math.max(2, Math.round((cellW - textW) / 2));
-          } else if (align === 'right') {
-            offsetX = Math.max(2, cellW - textW - 4);
-          } else {
-            offsetX = 2;
-          }
-
-          s += `    [TSCLibU]::windowsfontUnicode(${cellX + offsetX}, ${cellY + textOffsetY}, ${cFontSize}, ${cFontSize}, 0, 0, 0, '${psEscape(fontName)}', '${psEscape(rawContent)}') | Out-Null\n`;
+          let cw = colW[c];
+          const cs = ov?.colspan || 1;
+          if (cs > 1) { cw = 0; for (let ci = c; ci < Math.min(c + cs, columns.length); ci++) cw += colW[ci]; }
+          const cfs = Math.max(8, fs);
+          const tw = textW(raw, fs);
+          const oy = Math.max(1, Math.round((rowHeightDots - cfs) / 2) - Math.round(cfs * 0.25));
+          let ox;
+          if (tw >= cw) ox = Math.max(0, Math.round((cw - tw) / 2));
+          else if (align === 'center') ox = Math.max(2, Math.round((cw - tw) / 2));
+          else if (align === 'right') ox = Math.max(2, cw - tw - 4);
+          else ox = 2;
+          this._call('windowsfontUnicode', cx + ox, cy + oy, cfs, cfs, 0, 0, 0, fontName, raw);
         }
-        cellX += colWidthsDots[c];
+        cx += colW[c];
       }
     }
-
-    return s;
   }
 
+  /**
+   * Release DLL and clean up. Called on app quit.
+   */
   close() {
-    // No persistent state to clean up — each print spawns a new PowerShell process
+    if (this._portOpen && this._fn.closeport) {
+      try { this._call('closeport'); } catch (e) { /* ignore */ }
+      this._portOpen = false;
+    }
+    this._printing = false;
+    // Note: don't unload DLL — it stays loaded for app lifetime
   }
 }
 
