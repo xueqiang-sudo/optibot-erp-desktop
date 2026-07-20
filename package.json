@@ -1,6 +1,6 @@
 {
   "name": "optibot-erp-desktop",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "OptiBot ERP Desktop Application - Frappe ERP with scale and label printer integration",
   "main": "src/main/index.js",
   "author": "OptiBot",
@@ -19,7 +19,7 @@
     "electron-log": "^5.1.1",
     "electron-store": "^8.1.0",
     "electron-updater": "^6.1.7",
-    "iconv-lite": "^0.7.3",
+    "koffi": "^3.1.1",
     "serialport": "^12.0.0"
   },
   "devDependencies": {
@@ -92,6 +92,13 @@
         "to": "fonts",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "src/tsclib/x64",
+        "to": "tsclib/x64",
+        "filter": [
+          "*.dll"
         ]
       }
     ]

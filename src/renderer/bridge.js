@@ -4,8 +4,8 @@
  * This script is injected into the Frappe web page after it loads.
  * It provides a Frappe-friendly wrapper around the electronAPI hardware APIs.
  *
- * Printing uses TSPL (TSC Printer Language) — the native language of TSC printers.
- * Chinese text uses the "SimsunEx" TrueType font (宋体) stored on the printer's flash drive.
+ * Printing uses TSCLIB.dll via FFI — Windows system fonts (SimSun/宋体) are used,
+ * no dependency on printer flash-stored fonts. Bold text is supported.
  */
 
 (function () {
@@ -26,7 +26,7 @@
 
   // ─── Bridge API ──────────────────────────────────────────────
   window.OptiBotBridge = {
-    version: '2.0.0',
+    version: '3.1.0',
 
     // Current weight value
     currentWeight: null,
@@ -141,11 +141,13 @@
     },
 
     /**
-     * Print a label using TSPL commands.
-     * @param {string} tsplData - TSPL command string
+     * Print a label by sending a structured config to the main process.
+     * The main process uses TSCLIB.dll to render the label with Windows fonts.
+     *
+     * @param {Object} labelConfig - Structured label configuration
      * @returns {Promise<{success: boolean}>}
      */
-    async printLabel(tsplData) {
+    async printLabel(labelConfig) {
       let printerId = this.currentPrinter ? this.currentPrinter.id : null;
 
       if (!printerId) {
@@ -158,35 +160,33 @@
       }
 
       if (!printerId) {
-        this._showPrintResultDialog(false, '没有可用的打印机', null, tsplData);
+        this._showPrintResultDialog(false, '没有可用的打印机', null, null);
         throw new Error('No printer available');
       }
 
       const printer = this.printers.find((p) => p.id === printerId);
 
-      this._showPrintProgressDialog(printer, tsplData);
+      this._showPrintProgressDialog(printer, labelConfig);
 
       const timeoutMs = 10000;
       try {
         const result = await Promise.race([
-          window.electronAPI.printer.printTSPL(printerId, tsplData),
+          window.electronAPI.printer.printLabelConfig(printerId, labelConfig),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒无响应)`)), timeoutMs)
           ),
         ]);
-        this._showPrintResultDialog(true, null, printer, tsplData);
+        this._showPrintResultDialog(true, null, printer, null);
         return result;
       } catch (err) {
-        this._showPrintResultDialog(false, err.message, printer, tsplData);
+        this._showPrintResultDialog(false, err.message, printer, null);
         throw err;
       }
     },
 
     /**
-     * Create TSPL commands from a JSON description.
-     *
-     * TSPL is TSC's native printer language — works directly with the TSC Windows driver.
-     * Chinese text uses the "SimsunEx" TrueType font (宋体) stored on the printer's flash drive.
+     * Build a structured label configuration from a JSON description.
+     * The config is sent to the main process where TSCLIB.dll renders it.
      *
      * @param {Object} options
      * @param {number} options.width - Label width in mm
@@ -194,354 +194,97 @@
      * @param {number} [options.dpi=203] - Printer DPI
      * @param {number} [options.copies=1] - Number of copies
      * @param {Array} options.elements - Label elements
-     * @returns {string} Complete TSPL command string
+     * @returns {Object} Structured label configuration for IPC transport
      */
-    buildTSPL(options) {
+    buildLabelConfig(options) {
       const { width, height, dpi = 203, copies = 1, elements } = options;
-      const dotsPerMM = dpi / 25.4;
 
-      let tspl = '';
-
-      // ── Label setup ──
-      tspl += `SIZE ${width} mm,${height} mm\n`;
-      tspl += `GAP 2 mm,0 mm\n`;
-      tspl += `DENSITY 8\n`;
-      tspl += `CODEPAGE UTF-8\n`;
-      tspl += `CLS\n`;
-
-      // ── Render elements ──
-      for (let i = 0; i < elements.length; i++) {
-        const el = elements[i];
-        const x = Math.round((el.x || 0) * dotsPerMM);
-        const y = Math.round((el.y || 0) * dotsPerMM);
-
+      // Normalize elements — ensure all fields are present and properly typed
+      const normalizedElements = elements.map((el, i) => {
         console.log(`[OptiBot Bridge] Element ${i}: type=${el.type}, x=${el.x}, y=${el.y}`);
 
         switch (el.type) {
           case 'text':
-            tspl += this._tsplText(
-              {
-                content: el.content,
-                fontSize: el.font_size || 24,
-                fontWidth: el.font_width,
-                chinese: el.chinese,
-                bold: el.bold,
-                rotation: el.rotation,
-              },
-              x,
-              y
-            );
-            break;
-
           case 'date':
-            tspl += this._tsplText(
-              {
-                content: el.content,
-                fontSize: el.font_size || 20,
-                fontWidth: el.font_width,
-                chinese: el.chinese,
-                bold: el.bold,
-                rotation: el.rotation,
-              },
-              x,
-              y
-            );
-            break;
+            return {
+              type: el.type,
+              x: el.x || 0,
+              y: el.y || 0,
+              content: el.content || '',
+              font_size: el.font_size || (el.type === 'date' ? 20 : 24),
+              font_width: el.font_width || null,
+              bold: !!el.bold,
+              rotation: el.rotation || 0,
+              chinese: el.chinese,
+              font_name: el.font_name || 'SimSun',
+            };
 
           case 'barcode':
-            if (el.barcodeType === 'QR') {
-              const cellSize = el.size || 6;
-              tspl += `QRCODE ${x},${y},L,${cellSize},A,0,"${el.content || ''}"\n`;
-            } else {
-              const h = el.height || 60;
-              tspl += `BARCODE ${x},${y},"128",${h},1,0,2,2,"${el.content || ''}"\n`;
-            }
-            break;
+            return {
+              type: 'barcode',
+              x: el.x || 0,
+              y: el.y || 0,
+              content: el.content || '',
+              barcodeType: el.barcodeType || '128',
+              height: el.height || 60,
+              size: el.size || 6,
+              gs1: !!el.gs1,
+            };
 
-          case 'qrcode': {
-            const cellSize = el.size || 6;
-            let content = el.content || '';
-            // GS1 QR code: prepend FNC1
-            if (el.gs1) {
-              content = '>8' + content;
-            }
-            tspl += `QRCODE ${x},${y},L,${cellSize},A,0,"${content}"\n`;
-            break;
-          }
+          case 'qrcode':
+            return {
+              type: 'qrcode',
+              x: el.x || 0,
+              y: el.y || 0,
+              content: el.content || '',
+              size: el.size || 6,
+              gs1: !!el.gs1,
+            };
 
-          case 'line': {
-            const lineW = Math.round((el.width || 50) * dotsPerMM);
-            const thickness = el.thickness || 2;
-            // TSPL BAR: draw a solid rectangle (used as horizontal line)
-            tspl += `BAR ${x},${y},${lineW},${thickness}\n`;
-            break;
-          }
+          case 'line':
+            return {
+              type: 'line',
+              x: el.x || 0,
+              y: el.y || 0,
+              width: el.width || 50,
+              thickness: el.thickness || 2,
+            };
 
           case 'table':
-            tspl += this._tsplTable(el, x, y, dotsPerMM);
-            break;
+            return {
+              type: 'table',
+              x: el.x || 0,
+              y: el.y || 0,
+              columns: el.columns || [],
+              cell_overrides: el.cell_overrides || {},
+              max_rows: el.max_rows || 6,
+              row_height: el.row_height || 6,
+              border: el.border !== false,
+              border_thickness: el.border_thickness || 2,
+              cell_font_size: el.cell_font_size || 16,
+              header_font_size: el.header_font_size || 20,
+              show_header: el.show_header !== false,
+              font_name: el.font_name || 'SimSun',
+            };
 
           default:
             console.warn(`[OptiBot Bridge] Unknown element type: ${el.type}`);
+            return { type: el.type, x: el.x || 0, y: el.y || 0 };
         }
-      }
+      });
 
-      // ── Print ──
-      tspl += `PRINT ${copies}\n`;
-      return tspl;
-    },
-
-    /**
-     * Generate TSPL TEXT command for a text element.
-     *
-     * Chinese text: uses "SimsunEx" TrueType font (宋体) on printer's flash drive
-     * English text: uses built-in font "1" (8x12 dots base)
-     *
-     * @private
-     */
-    _tsplText(el, x, y) {
-      const h = el.fontSize || 24;
-      const content = (el.content || '').replace(/"/g, '""');  // Escape double quotes
-      if (!content) return '';
-
-      // Rotation: 0, 90, 180, 270
-      const rot = el.rotation || 0;
-
-      // Use TEXT with SimsunEx.TTF (宋体) vector font
-      // width = height for proper character proportions (no distortion)
-      const size = Math.max(8, h);
-      return `TEXT ${x},${y},"SimsunEx.TTF",${rot},${size},${size},"${content}"\n`;
-    },
-
-    /**
-     * Generate TSPL commands for a table element.
-     * Uses BAR for border lines and TEXT for cell content.
-     *
-     * @private
-     */
-    _tsplTable(el, tableX, tableY, dotsPerMM) {
-      let tspl = '';
-      const columns = el.columns || [];
-      const cellOverrides = el.cell_overrides || {};
-      const maxRows = el.max_rows || 6;
-      const rowHeightMM = el.row_height || 6;
-      const rowHeightDots = Math.round(rowHeightMM * dotsPerMM);
-      const border = el.border !== false;
-      const borderThickness = el.border_thickness || 2;
-      const defaultCellFontSize = el.cell_font_size || 16;
-      const headerFontSize = el.header_font_size || 20;
-      const chinese = el.chinese !== false;
-      const showHeader = el.show_header !== false;
-
-      // Calculate column widths in dots
-      const colWidthsDots = columns.map((col) => Math.round((col.width || 20) * dotsPerMM));
-      const totalTableWidthDots = colWidthsDots.reduce((s, w) => s + w, 0);
-      const totalTableHeightDots = rowHeightDots * maxRows;
-
-      // ── Build cell visibility & colspan maps ──
-      const isCellHidden = {};
-      const cellSpan = {};  // cellSpan[r,c] = colspan value (default 1)
-      for (const [key, override] of Object.entries(cellOverrides)) {
-        if (override && override.hidden) {
-          isCellHidden[key] = true;
-        }
-        if (override && override.colspan > 1) {
-          cellSpan[key] = override.colspan;
-        }
-      }
-      function cellHidden(r, c) {
-        return isCellHidden[`${r},${c}`] === true;
-      }
-      function getColspan(r, c) {
-        return cellSpan[`${r},${c}`] || 1;
-      }
-      // Check if vertical line at column boundary c should be skipped in row r
-      // (skipped when a colspan from the left covers column c, or hidden cells on both sides)
-      function skipVerticalLine(r, c) {
-        // Check if left cell's colspan covers this boundary
-        for (let lc = c - 1; lc >= 0; lc--) {
-          const span = getColspan(r, lc);
-          if (lc + span > c) return true;  // colspan from lc covers column c
-        }
-        // Check if right cell is part of a colspan from further right
-        for (let rc = c; rc < columns.length; rc++) {
-          const span = getColspan(r, rc);
-          if (span > 1 && rc < c) return true;
-        }
-        // Standard hidden check: both sides hidden
-        return cellHidden(r, c - 1) && cellHidden(r, c);
-      }
-      // Check if horizontal line at row boundary r should be skipped in column c
-      function skipHorizontalLine(r, c) {
-        // Check if above cell is part of a rowspan (future: rowspan support)
-        // For now: skip if both above and below are hidden
-        return cellHidden(r - 1, c) && cellHidden(r, c);
-      }
-
-      // ── Draw border grid ──
-      if (border) {
-        const xEnd = tableX + totalTableWidthDots - 1;
-        const yEnd = tableY + totalTableHeightDots - 1;
-        tspl += `BOX ${tableX},${tableY},${xEnd},${yEnd},${borderThickness}\n`;
-
-        // Horizontal internal lines
-        // When the row below has hidden cells (= merged region),
-        // draw one full-width line spanning entire table width
-        for (let r = 1; r < maxRows; r++) {
-          const ly = tableY + r * rowHeightDots;
-
-          // Check if the row below this boundary has any hidden cells
-          let belowHasHidden = false;
-          for (let c = 0; c < columns.length; c++) {
-            if (cellHidden(r, c)) {
-              belowHasHidden = true;
-              break;
-            }
-          }
-
-          if (belowHasHidden) {
-            // Hidden cells exist below → draw one full-width line
-            tspl += `BAR ${tableX},${ly},${totalTableWidthDots},${borderThickness}\n`;
-          } else {
-            // No hidden cells below → draw per-column segments
-            let lx = tableX;
-            for (let c = 0; c < columns.length; c++) {
-              tspl += `BAR ${lx},${ly},${colWidthsDots[c]},${borderThickness}\n`;
-              lx += colWidthsDots[c];
-            }
-          }
-        }
-
-        // Vertical internal lines
-        let cx = tableX;
-        for (let c = 1; c < columns.length; c++) {
-          cx += colWidthsDots[c - 1];
-          for (let r = 0; r < maxRows; r++) {
-            if (!skipVerticalLine(r, c)) {
-              const vy = tableY + r * rowHeightDots;
-              tspl += `BAR ${cx},${vy},${borderThickness},${rowHeightDots}\n`;
-            }
-          }
-        }
-      }
-
-      // ── Helper: calculate font size in dots ──
-      // SimsunEx.TTF (宋体): vector font, TEXT params are font size in dots (not multipliers)
-      function chnSizeForDots(fontSize) {
-        return Math.max(8, fontSize);
-      }
-      // Estimate rendered text width in dots
-      // SimsunEx.TTF: charW = fontSize (1:1 ratio)
-      //   - CJK chars: 3 UTF-8 bytes → 3 × fontSize dots
-      //   - ASCII chars: 1 byte → fontSize dots
-      function utf8ByteLen(ch) {
-        const code = ch.charCodeAt(0);
-        if (code <= 0x7F) return 1;
-        if (code <= 0x7FF) return 2;
-        if (code <= 0xFFFF) return 3;
-        return 4;
-      }
-      function estimateTextWidth(text, fontSize) {
-        const charW = chnSizeForDots(fontSize);
-        let w = 0;
-        for (let i = 0; i < text.length; i++) {
-          w += utf8ByteLen(text[i]) * charW;
-        }
-        return w;
-      }
-
-      // ── Draw header row ──
-      if (showHeader) {
-        let hx = tableX;
-        const hMul = chnSizeForDots(headerFontSize);
-
-        for (let c = 0; c < columns.length; c++) {
-          if (columns[c].header) {
-            const header = (columns[c].header || '').replace(/"/g, '""');
-            if (header) {
-              const cellW = colWidthsDots[c];
-              const textW = estimateTextWidth(header, headerFontSize);
-              const offsetX = Math.max(2, Math.round((cellW - textW) / 2));
-              const textY = tableY + 2;
-
-              tspl += `TEXT ${hx + offsetX},${textY},"SimsunEx.TTF",0,${hMul},${hMul},"${header}"\n`;
-            }
-          }
-          hx += colWidthsDots[c];
-        }
-      }
-
-      // ── Draw cell content ──
-      for (let r = 0; r < maxRows; r++) {
-        const cellY = tableY + r * rowHeightDots;
-
-        let cellX = tableX;
-        for (let c = 0; c < columns.length; c++) {
-          const key = `${r},${c}`;
-          const override = cellOverrides[key];
-
-          // ★ Skip hidden cells
-          if (override && override.hidden) {
-            cellX += colWidthsDots[c];
-            continue;
-          }
-
-          const rawContent = override ? override.content || '' : '';
-          const content = rawContent.replace(/"/g, '""');
-
-          if (content) {
-            // ★ Read per-cell font_size from override, fall back to default
-            const fontSize = (override && override.font_size) || defaultCellFontSize;
-            const align = columns[c].align || 'left';
-
-            // ★ Handle colspan: merge multiple column widths
-            let cellW = colWidthsDots[c];
-            const colspan = (override && override.colspan) || 1;
-            if (colspan > 1) {
-              cellW = 0;
-              for (let ci = c; ci < Math.min(c + colspan, columns.length); ci++) {
-                cellW += colWidthsDots[ci];
-              }
-            }
-
-            // Calculate font size in dots for this cell
-            const cMul = chnSizeForDots(fontSize);
-
-            // Estimate text width for alignment
-            const textW = estimateTextWidth(rawContent, fontSize);
-            const renderedH = cMul;
-
-            // Vertical centering: shift up by ~25% of fontSize to compensate
-            // for font baseline positioning (text may appear lower than geometric center)
-            const ascentShift = Math.round(cMul * 0.25);
-            const textOffsetY = Math.max(1, Math.round((rowHeightDots - renderedH) / 2) - ascentShift);
-
-            // Horizontal alignment (auto-center when text overflows cell)
-            let offsetX;
-            if (textW >= cellW) {
-              // Text wider than cell: center to minimize overflow on both sides
-              offsetX = Math.max(0, Math.round((cellW - textW) / 2));
-            } else if (align === 'center') {
-              offsetX = Math.max(2, Math.round((cellW - textW) / 2));
-            } else if (align === 'right') {
-              offsetX = Math.max(2, cellW - textW - 4);
-            } else {
-              offsetX = 2;
-            }
-
-            tspl += `TEXT ${cellX + offsetX},${cellY + textOffsetY},"SimsunEx.TTF",0,${cMul},${cMul},"${content}"\n`;
-          }
-
-          cellX += colWidthsDots[c];
-        }
-      }
-
-      return tspl;
+      return {
+        width,
+        height,
+        dpi,
+        copies,
+        elements: normalizedElements,
+      };
     },
 
     /**
      * Print a label from a JSON description.
-     * Converts JSON → TSPL → sends to printer.
+     * Converts JSON → structured config → sends to main process for TSCLIB.dll rendering.
      */
     async printFromJSON(json) {
       try {
@@ -593,12 +336,12 @@
           `${json.width}x${json.height}mm`
         );
 
-        const tsplData = this.buildTSPL(json);
-        console.log('[OptiBot Bridge] Generated TSPL:\n', tsplData);
-        return await this.printLabel(tsplData);
+        const labelConfig = this.buildLabelConfig(json);
+        console.log('[OptiBot Bridge] Built label config:', JSON.stringify(labelConfig).substring(0, 200));
+        return await this.printLabel(labelConfig);
       } catch (err) {
         console.error('[OptiBot Bridge] printFromJSON error:', err.message, err.stack);
-        this._showPrintResultDialog(false, err.message, null, '');
+        this._showPrintResultDialog(false, err.message, null, null);
         throw err;
       }
     },
@@ -669,11 +412,11 @@
         <div style="background:#fff;border-radius:12px;padding:0;min-width:380px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;">⏳ 正在打印...</div>
           <div style="padding:20px 24px;text-align:center;">
-            <div style="margin-bottom:12px;font-size:14px;color:#333;">正在发送 TSPL 指令到打印机</div>
+            <div style="margin-bottom:12px;font-size:14px;color:#333;">正在通过 TSCLIB 驱动打印标签</div>
             <div style="font-size:13px;color:#666;margin-bottom:16px;">${printerName}</div>
             <div style="display:inline-block;width:40px;height:40px;border:4px solid #e0e0e0;border-top:4px solid #ff9800;border-radius:50%;animation:optibot-spin 1s linear infinite;"></div>
             <style>@keyframes optibot-spin { to { transform: rotate(360deg); } }</style>
-            <div style="margin-top:12px;font-size:12px;color:#999;">TSPL 数据: ${data ? data.length : 0} 字符</div>
+            <div style="margin-top:12px;font-size:12px;color:#999;">标签元素: ${data && data.elements ? data.elements.length : 0} 个</div>
           </div>
         </div>
       `;
@@ -707,10 +450,10 @@
         ? `<div style="margin:8px 0;padding:10px;background:#ffebee;border-radius:6px;color:#c62828;font-size:13px;"><b>错误：</b>${errorMsg}</div>`
         : '';
 
-      const dataPreview = data && data.length > 0
+      const dataPreview = data && data.elements && data.elements.length > 0
         ? `<details style="margin:8px 0;">
-            <summary style="cursor:pointer;font-size:13px;color:#666;">📄 TSPL 指令 (${data.length} 字符)</summary>
-            <pre style="margin:8px 0;padding:10px;background:#263238;color:#e0e0e0;border-radius:6px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${data.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+            <summary style="cursor:pointer;font-size:13px;color:#666;">📄 标签配置 (${data.elements.length} 个元素, ${data.width}×${data.height}mm)</summary>
+            <pre style="margin:8px 0;padding:10px;background:#263238;color:#e0e0e0;border-radius:6px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;">${JSON.stringify(data, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
            </details>`
         : '';
 
@@ -779,15 +522,15 @@
       overlay.innerHTML = `
         <div style="background:#fff;border-radius:12px;padding:0;min-width:500px;max-width:650px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
           <div style="background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
-            <span>🖨️ TSPL 打印机 (${printers.length} 台)</span>
+            <span>🖨️ TSC 标签打印机 (${printers.length} 台)</span>
             <button id="optibot-printer-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
           </div>
           <div style="padding:16px 24px;max-height:500px;overflow-y:auto;">
-            <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">✅ 已安装的打印机 (TSPL 原始打印)</div>
+            <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">✅ 已安装的打印机 (TSCLIB 驱动打印)</div>
             ${printerHtml}
             <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
-              <b>提示：</b>使用 TSPL (TSC 打印机原生语言) 通过 Windows 驱动 RAW 模式发送指令。
-              中文使用打印机 Flash 中的 SimsunEx 字体（宋体）。
+              <b>提示：</b>通过 TSCLIB.dll 直接调用 Windows 驱动打印。
+              中文使用 Windows 系统字体 SimSun（宋体），不依赖打印机字库。支持粗体。
             </div>
           </div>
           <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">

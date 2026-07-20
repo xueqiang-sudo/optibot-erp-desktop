@@ -175,23 +175,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * Label Printer API (TSC via Windows driver, TSPL commands)
+   * Label Printer API (TSC via TSCLIB.dll, Windows system fonts)
    *
    * Printers are discovered through the Windows print driver (must be installed in Windows).
-   * Raw TSPL data is sent through the Windows Spooler API.
+   * Printing is done via TSCLIB.dll FFI — uses Windows system fonts (SimSun/宋体),
+   * no dependency on printer flash-stored fonts. Bold text is supported.
    *
    * Usage:
    *   const printers = await window.electronAPI.printer.listPrinters();
-   *   await window.electronAPI.printer.printTSPL(printers[0].id, 'SIZE 40 mm,30 mm\n...PRINT 1');
-   *
-   * TSPL with Chinese text (uses AC font on printer flash):
-   *   SIZE 40 mm,30 mm
-   *   GAP 2 mm,0
-   *   DIRECTION 1
-   *   CODEPAGE UTF-8
-   *   CLS
-   *   TEXT 100,100,"SimsunEx.TTF",0,1,1,"品名：蓝牙耳机"
-   *   PRINT 1
+   *   await window.electronAPI.printer.printLabelConfig(printers[0].id, {
+   *     width: 40, height: 30, dpi: 203, copies: 1,
+   *     elements: [
+   *       { type: 'text', x: 5, y: 5, content: '品名：蓝牙耳机', font_size: 24, bold: true }
+   *     ]
+   *   });
    */
   printer: {
     /**
@@ -201,13 +198,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listPrinters: () => ipcRenderer.invoke('printer:list'),
 
     /**
-     * Send TSPL data to printer via Windows Spooler (RAW mode)
+     * Print a label using structured configuration (TSCLIB.dll via FFI).
+     * Text rendering uses Windows system fonts — no printer font dependency.
+     * Bold text is supported via the bold property on text elements.
+     *
      * @param {string} printerId - Windows printer name from listPrinters()
-     * @param {string} tsplData - Complete TSPL command string
+     * @param {Object} labelConfig - Structured label configuration
+     * @param {number} labelConfig.width - Label width in mm
+     * @param {number} labelConfig.height - Label height in mm
+     * @param {number} [labelConfig.dpi=203] - Printer DPI
+     * @param {number} [labelConfig.copies=1] - Number of copies
+     * @param {Array} labelConfig.elements - Label elements (text, barcode, qrcode, line, table)
      * @returns {Promise<{success: boolean}>}
      */
-    printTSPL: (printerId, tsplData) =>
-      ipcRenderer.invoke('printer:print', printerId, tsplData),
+    printLabelConfig: (printerId, labelConfig) =>
+      ipcRenderer.invoke('printer:print-label', printerId, labelConfig),
 
     /**
      * Get printer status

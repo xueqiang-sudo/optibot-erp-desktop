@@ -388,8 +388,8 @@ function registerIPCHandlers() {
     return await printerService.listPrinters();
   });
 
-  ipcMain.handle('printer:print', async (_event, printerId, tsplData) => {
-    return await printerService.printTSPL(printerId, tsplData);
+  ipcMain.handle('printer:print-label', async (_event, printerId, labelConfig) => {
+    return await printerService.printLabel(printerId, labelConfig);
   });
 
   ipcMain.handle('printer:get-status', () => {
@@ -474,8 +474,8 @@ function initServices() {
     log.error('Printer error:', error);
   });
 
-  // TSPL does not need font preloading — Chinese fonts are referenced
-  // directly by name (e.g., "SimsunEx") in TEXT commands
+  // TSCLIB.dll is pre-loaded in initUSBWatcher() — no font preloading needed
+  // Chinese text uses Windows system font SimSun (宋体) via windowsfontUnicode()
 
   printerService.initUSBWatcher();
 

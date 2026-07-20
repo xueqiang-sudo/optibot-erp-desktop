@@ -1,19 +1,12 @@
 /**
- * Label Printer Service - Windows Spooler API Raw Printing (TSPL)
+ * Label Printer Service — TSCLIB.dll via FFI
  *
- * Sends TSPL commands to TSC label printers through the Windows print
- * driver using the Spooler API in RAW mode.
+ * Uses TSCLIB.dll (x64) to print labels through the TSC Windows driver.
+ * Text rendering uses Windows system fonts (SimSun/宋体) via windowsfontUnicode(),
+ * eliminating the dependency on printer flash-stored fonts.
  *
- * TSPL is TSC's native printer language, so the TSC Windows driver
- * passes TSPL data directly to the printer without modification.
- *
- * Chinese text uses fonts stored on the printer's flash drive (e.g., "SimsunEx").
- * The font is referenced directly by name in TEXT commands — no separate
- * font mapping step is needed.
- *
- * Encoding:
- * - PowerShell scripts are written to UTF-8 BOM temp files and executed with -File
- * - TSPL data is base64-encoded to safely embed in the PowerShell script
+ * Printer discovery still uses PowerShell Get-Printer cmdlet.
+ * Actual printing is done via TSCLIB.dll FFI calls (no PowerShell, no winspool.drv).
  */
 
 const { EventEmitter } = require('events');
@@ -22,7 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const log = require('electron-log');
-const iconv = require('iconv-lite');
+const TSCLibWrapper = require('./tsclib-wrapper');
 
 // PowerShell path (available on all modern Windows systems)
 const POWERSHELL = 'powershell.exe';
@@ -33,10 +26,6 @@ const POLL_INTERVAL = 5000;
 
 // Timeout for PowerShell commands (ms)
 const LIST_TIMEOUT = 10000;
-const PRINT_TIMEOUT = 15000;
-
-// TSPL does not need a separate font mapping command.
-// Chinese fonts are referenced directly by name (e.g., "SimsunEx") in TEXT commands.
 
 // Temp directory for PowerShell scripts
 const TEMP_DIR = os.tmpdir();
@@ -57,114 +46,6 @@ try {
 }
 `.trim();
 
-/**
- * Build a PowerShell script that sends raw data to a printer
- * via the Windows Spooler API (P/Invoke).
- *
- * The script:
- * 1. Defines P/Invoke signatures for winspool.drv functions
- * 2. Decodes base64-encoded raw data
- * 3. Opens the printer, starts a RAW doc, writes data, ends doc, closes printer
- *
- * @param {string} printerName - Windows printer name
- * @param {string} base64Data - Base64-encoded UTF-8 ZPL data
- * @param {string} docName - Document name for the print spooler
- * @returns {string} PowerShell script
- */
-function buildRawPrintScript(printerName, base64Data, docName) {
-  // Escape single quotes in printer name and doc name for PowerShell
-  const escapedName = printerName.replace(/'/g, "''");
-  const escapedDoc = docName.replace(/'/g, "''");
-
-  return `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-
-# ── Define Windows Spooler API via P/Invoke ──
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-public struct DOC_INFO_1 {
-    [MarshalAs(UnmanagedType.LPWStr)] public string pDocName;
-    [MarshalAs(UnmanagedType.LPWStr)] public string pOutputFile;
-    [MarshalAs(UnmanagedType.LPWStr)] public string pDatatype;
-}
-
-public static class Winspool {
-    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool OpenPrinterW(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool ClosePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool StartDocPrinterW(IntPtr hPrinter, int Level, ref DOC_INFO_1 pDocInfo);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool EndDocPrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", SetLastError = true)]
-    public static extern bool WritePrinter(IntPtr hPrinter, byte[] pBytes, int dwCount, out int dwWritten);
-}
-"@
-
-# ── Decode base64 data to bytes ──
-$bytes = [System.Convert]::FromBase64String('${base64Data}')
-
-# ── Open the printer ──
-$printerName = '${escapedName}'
-$handle = [IntPtr]::Zero
-
-if (-not [Winspool]::OpenPrinterW($printerName, [ref]$handle, [IntPtr]::Zero)) {
-    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    throw "OpenPrinterW failed for '$printerName' (error code: $err)"
-}
-
-try {
-    # ── Start a RAW print job ──
-    $docInfo = New-Object DOC_INFO_1
-    $docInfo.pDocName = '${escapedDoc}'
-    $docInfo.pOutputFile = $null
-    $docInfo.pDatatype = 'RAW'
-
-    if (-not [Winspool]::StartDocPrinterW($handle, 1, [ref]$docInfo)) {
-        $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        throw "StartDocPrinterW failed (error code: $err)"
-    }
-
-    try {
-        # ── Write raw data to the printer ──
-        $written = 0
-        if (-not [Winspool]::WritePrinter($handle, $bytes, $bytes.Length, [ref]$written)) {
-            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            throw "WritePrinter failed (error code: $err)"
-        }
-
-        if ($written -ne $bytes.Length) {
-            throw "WritePrinter: only $written of $($bytes.Length) bytes written"
-        }
-
-        # ── End the print job ──
-        if (-not [Winspool]::EndDocPrinter($handle)) {
-            $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            throw "EndDocPrinter failed (error code: $err)"
-        }
-
-        Write-Output "OK"
-    }
-    catch {
-        [Winspool]::EndDocPrinter($handle) | Out-Null
-        throw
-    }
-}
-finally {
-    [Winspool]::ClosePrinter($handle) | Out-Null
-}
-`.trim();
-}
-
 class PrinterService extends EventEmitter {
   constructor() {
     super();
@@ -173,18 +54,30 @@ class PrinterService extends EventEmitter {
     this.pollTimer = null;
     this.polling = false;
 
+    // TSCLIB.dll wrapper for printing
+    this.tsclib = new TSCLibWrapper();
+
     // Bind methods
     this._pollPrinters = this._pollPrinters.bind(this);
   }
 
   /**
    * Initialize periodic polling for printer change detection.
-   * Replaces the USB hot-plug watcher used in the old libusb-based implementation.
    */
   initUSBWatcher() {
     if (this.pollTimer) return;
 
     log.info('[PrinterService] Starting printer polling (interval: %dms)', POLL_INTERVAL);
+
+    // Pre-load TSCLIB.dll
+    try {
+      this.tsclib.load();
+      log.info('[PrinterService] TSCLIB.dll pre-loaded successfully');
+    } catch (err) {
+      log.error('[PrinterService] TSCLIB.dll pre-load failed:', err.message);
+      // Will retry on first print attempt
+    }
+
     // Do an initial scan
     this._pollPrinters();
     // Set up periodic polling
@@ -251,82 +144,39 @@ class PrinterService extends EventEmitter {
   }
 
   /**
-   * Send TSPL data to the printer via Windows Spooler API (RAW mode).
+   * Print a label using TSCLIB.dll (new method).
    *
-   * TSPL is TSC's native printer language. Chinese fonts are referenced
-   * directly by name (e.g., "SimsunEx") in TEXT commands — no separate font
-   * mapping step is needed.
+   * Accepts a structured label configuration (JSON object) and renders
+   * the label via TSCLIB.dll function calls using Windows system fonts.
    *
    * @param {string} printerId - Windows printer name
-   * @param {string} tsplData - Complete TSPL command string
+   * @param {Object} labelConfig - Label configuration
+   * @param {number} labelConfig.width - Label width in mm
+   * @param {number} labelConfig.height - Label height in mm
+   * @param {number} [labelConfig.dpi=203] - Printer DPI
+   * @param {number} [labelConfig.copies=1] - Number of copies
+   * @param {Array} labelConfig.elements - Label elements
    * @returns {Promise<{success: boolean}>}
    */
-  async printTSPL(printerId, tsplData) {
-    log.info(`[PrinterService] Printing TSPL to "${printerId}" (${tsplData.length} chars)`);
-
-    // Send the TSPL data with timeout
-    const timeoutMs = PRINT_TIMEOUT;
-    await Promise.race([
-      this.sendRaw(printerId, tsplData),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`打印超时 (${timeoutMs / 1000}秒)`)), timeoutMs)
-      ),
-    ]);
-    return { success: true };
-  }
-
-  /**
-   * Send raw data to the printer via Windows Spooler API.
-   * The data is sent in RAW mode — no processing by the printer driver.
-   *
-   * Uses a temp file approach to avoid command-line encoding issues:
-   * 1. Write PowerShell script to a UTF-8 BOM temp file
-   * 2. Execute with powershell.exe -File (more reliable than -Command for complex scripts)
-   * 3. Clean up temp file after execution
-   *
-   * @param {string} printerId - Windows printer name
-   * @param {string} data - Data string to send (ZPL commands)
-   * @returns {Promise<void>}
-   */
-  async sendRaw(printerId, data) {
-    if (!printerId) {
-      throw new Error('Printer name is required');
+  async printLabel(printerId, labelConfig) {
+    const printer = this.knownPrinters.get(printerId);
+    if (!printer) {
+      // Printer might not be in knownPrinters if it was just connected
+      // Try using the printerId as the name directly
+      log.warn(`[PrinterService] Printer "${printerId}" not in known printers, using name directly`);
     }
 
-    // Convert TSPL string to UTF-8 encoding
-    // The TSPL output includes CODEPAGE UTF-8, so we send UTF-8 bytes to match.
-    const buffer = Buffer.from(data, 'utf-8');
-    const base64Data = buffer.toString('base64');
+    const printerName = printer ? printer.name : printerId;
+    log.info(`[PrinterService] Printing label to "${printerName}" via TSCLIB.dll`);
 
-    // ★ Debug: save TSPL data to application directory for manual testing
-    // process.execPath = the .exe location (writable), works in both dev and packaged mode
-    const appDir = path.dirname(process.execPath);
-    const debugFile = path.join(appDir, 'debug-last-tspl.txt');
-    try {
-      fs.writeFileSync(debugFile, data, 'utf-8');
-      log.info(`[PrinterService] TSPL saved to: ${debugFile}`);
-    } catch (e) {
-      // Ignore debug file errors
-    }
+    // Log label config summary
+    const elCount = labelConfig.elements ? labelConfig.elements.length : 0;
+    log.info(`[PrinterService] Label: ${labelConfig.width}×${labelConfig.height}mm, ${elCount} elements, ${labelConfig.copies || 1} copies`);
 
-    log.info(
-      `[PrinterService] Sending raw data to "${printerId}" (${buffer.length} bytes, ${data.length} chars)`
-    );
-    // Log first 200 chars of TSPL for debugging
-    log.info(`[PrinterService] TSPL preview:\n${data.substring(0, 200)}`);
+    const result = await this.tsclib.printLabel(printerName, labelConfig);
 
-    // Build the PowerShell script with embedded base64 data
-    const docName = `TSPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    const script = buildRawPrintScript(printerId, base64Data, docName);
-
-    // Execute the PowerShell script (using temp file for reliable encoding)
-    const result = await this._runPowerShell(script, PRINT_TIMEOUT);
-
-    if (result && result.trim() === 'OK') {
-      log.info(`[PrinterService] TSPL data sent successfully to "${printerId}" (${buffer.length} bytes)`);
-    } else {
-      log.warn(`[PrinterService] Print completed with unexpected output: ${result}`);
-    }
+    log.info(`[PrinterService] Label printed successfully via TSCLIB.dll`);
+    return result;
   }
 
   /**
@@ -348,6 +198,13 @@ class PrinterService extends EventEmitter {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+
+    // Close TSCLIB port if open
+    if (this.tsclib) {
+      this.tsclib.close();
+      this.tsclib = null;
+    }
+
     this.knownPrinters.clear();
     this.removeAllListeners();
   }
@@ -432,12 +289,7 @@ class PrinterService extends EventEmitter {
 
   /**
    * Run a PowerShell script using a temp file for reliable encoding.
-   *
-   * Why temp file + -File instead of -Command:
-   * - The -Command parameter passes the script through the Windows command line,
-   *   which can mangle Unicode/Chinese characters in certain environments.
-   * - Writing to a UTF-8 BOM file and using -File guarantees correct encoding
-   *   regardless of the system's code page or console encoding.
+   * Used only for printer discovery (Get-Printer).
    *
    * @param {string} script - PowerShell script to execute
    * @param {number} timeout - Timeout in milliseconds
@@ -446,14 +298,13 @@ class PrinterService extends EventEmitter {
    */
   _runPowerShell(script, timeout = 10000) {
     return new Promise((resolve, reject) => {
-      // Write script to temp file with UTF-8 BOM encoding
       const scriptFile = path.join(
         TEMP_DIR,
         `optibot-ps-${process.pid}-${Date.now()}.ps1`
       );
 
       // UTF-8 BOM ensures PowerShell reads the file correctly
-      const BOM = '﻿';
+      const BOM = '';
       fs.writeFileSync(scriptFile, BOM + script, 'utf-8');
 
       const args = [...POWERSHELL_ARGS, '-File', scriptFile];
