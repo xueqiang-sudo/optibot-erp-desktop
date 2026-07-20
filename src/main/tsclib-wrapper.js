@@ -109,7 +109,7 @@ class TSCLibWrapper {
       ['setup',       'int', ['str','str','str','str','str','str','str'],         127],
       ['clearbuffer', 'int', [],                                                   29],
       ['printlabel',  'int', ['str','str'],                                       104],
-      ['windowsfont', 'int', ['int','int','int','int','int','int','int','void *','void *'], 155],
+      ['windowsfont', 'int', ['int','int','int','int','int','int','int','str','void *'], 155],
       ['barcode',     'int', ['str','str','str','str','str','str','str','str','str'], 24],
       ['qrcode',      'int', ['str','str','str','str','str','str','str','str'],   107],
       ['sendcommand',    'int', ['str'],                                          115],
@@ -149,7 +149,11 @@ class TSCLibWrapper {
   _call(name, ...args) {
     const fn = this._fn[name];
     if (!fn) throw new Error(`TSCLIB 函数 ${name} 未绑定`);
-    const argStr = args.map(a => typeof a === 'string' ? `"${a.substring(0, 40)}"` : a).join(', ');
+    const argStr = args.map(a => {
+      if (typeof a === 'string') return `"${a.substring(0, 40)}"`;
+      if (Buffer.isBuffer(a)) return `<buf:${a.length}b>`;
+      return String(a);
+    }).join(', ');
     log.info(`[TSCLIB] → ${name}(${argStr})`);
     // Write to diag file BEFORE the call (if it crashes, we see the last call)
     try { fs.appendFileSync(DIAG_FILE, `[CALL] ${name}(${argStr})\n`); } catch (e) {}
@@ -212,9 +216,10 @@ class TSCLibWrapper {
         const h = Math.max(8, el.font_size || 24);
         const fontName = el.font_name || 'SimSun';
         const bold = el.bold ? 1 : 0;
-        const fnBuf = iconv.encode(fontName + '\0', 'gbk');
-        const textBuf = iconv.encode(c + '\0', 'gbk');
-        this._call('windowsfont', x, y, h, h, bold, 0, 0, fnBuf, textBuf);
+        // fontName as str (ASCII "SimSun" is same in UTF-8 and GBK)
+        // text as GBK Buffer (Chinese chars need system ANSI encoding)
+        const textBuf = iconv.encode(c, 'gbk');
+        this._call('windowsfont', x, y, h, h, bold, 0, 0, fontName, textBuf);
         break;
       }
       case 'barcode': {
@@ -278,7 +283,7 @@ class TSCLibWrapper {
         const h = cols[c].header || '';
         if (h) {
           const tw2 = ew(h, hfs), ox = Math.max(2, Math.round((cw[c] - tw2) / 2));
-          this._call('windowsfont', hx + ox, ty + 2, hf, hf, 1, 0, 0, iconv.encode(fn + '\0', 'gbk'), iconv.encode(h + '\0', 'gbk'));
+          this._call('windowsfont', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, iconv.encode(h, 'gbk'));
         }
         hx += cw[c];
       }
@@ -298,7 +303,7 @@ class TSCLibWrapper {
           else if (al === 'center') ox = Math.max(2, Math.round((cellW - tw2) / 2));
           else if (al === 'right') ox = Math.max(2, cellW - tw2 - 4);
           else ox = 2;
-          this._call('windowsfont', cx + ox, cy + oy, cf, cf, 0, 0, 0, iconv.encode(fn + '\0', 'gbk'), iconv.encode(raw + '\0', 'gbk'));
+          this._call('windowsfont', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, iconv.encode(raw, 'gbk'));
         }
         cx += cw[c];
       }
