@@ -216,7 +216,7 @@
               bold: !!el.bold,
               rotation: el.rotation || 0,
               chinese: el.chinese,
-              font_name: el.font_name || 'SimSun',
+              font_name: el.font_name || 'CHK',
             };
 
           case 'barcode':
@@ -264,7 +264,7 @@
               cell_font_size: el.cell_font_size || 16,
               header_font_size: el.header_font_size || 20,
               show_header: el.show_header !== false,
-              font_name: el.font_name || 'SimSun',
+              font_name: el.font_name || 'CHK',
             };
 
           default:

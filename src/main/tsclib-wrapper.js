@@ -10,7 +10,6 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const log = require('electron-log');
-const iconv = require('iconv-lite');
 
 // Diagnostic file in %TEMP% (always writable on Windows)
 const DIAG_FILE = path.join(os.tmpdir(), 'tsclib-diag.txt');
@@ -109,7 +108,6 @@ class TSCLibWrapper {
       ['setup',       'int', ['str','str','str','str','str','str','str'],         127],
       ['clearbuffer', 'int', [],                                                   29],
       ['printlabel',  'int', ['str','str'],                                       104],
-      ['windowsfont', 'int', ['int','int','int','int','int','int','int','str','void *'], 155],
       ['barcode',     'int', ['str','str','str','str','str','str','str','str','str'], 24],
       ['qrcode',      'int', ['str','str','str','str','str','str','str','str'],   107],
       ['sendcommand',    'int', ['str'],                                          115],
@@ -187,6 +185,7 @@ class TSCLibWrapper {
 
       try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling setup ${width}x${height}...\n`); } catch (e) {}
       this._call('setup', String(width), String(height), '4', '8', '0', '0', '2,0');
+      this._call('sendcommand', 'CODEPAGE UTF-8');
       try { fs.appendFileSync(DIAG_FILE, `[PRINT] calling clearbuffer...\n`); } catch (e) {}
       this._call('clearbuffer');
 
@@ -214,12 +213,10 @@ class TSCLibWrapper {
       case 'text': case 'date': {
         const c = el.content || ''; if (!c) return;
         const h = Math.max(8, el.font_size || 24);
-        const fontName = el.font_name || 'SimSun';
-        const bold = el.bold ? 1 : 0;
-        // fontName as str (ASCII "SimSun" is same in UTF-8 and GBK)
-        // text as GBK Buffer (Chinese chars need system ANSI encoding)
-        const textBuf = iconv.encode(c, 'gbk');
-        this._call('windowsfont', x, y, h, h, bold, 0, 0, fontName, textBuf);
+        const fontName = el.font_name || 'CHK';
+        const escaped = c.replace(/"/g, '""');
+        // Use TSPL TEXT command with printer-stored CHK font
+        this._call('sendcommand', `TEXT ${x},${y},"${fontName}",0,${h},${h},"${escaped}"`);
         break;
       }
       case 'barcode': {
@@ -253,7 +250,7 @@ class TSCLibWrapper {
     const mr = el.max_rows || 6, rh = Math.round((el.row_height || 6) * dpm);
     const bdr = el.border !== false, bt = el.border_thickness || 2;
     const dfs = el.cell_font_size || 16, hfs = el.header_font_size || 20;
-    const sh = el.show_header !== false, fn = el.font_name || 'SimSun';
+    const sh = el.show_header !== false, fn = el.font_name || 'CHK';
     const cw = cols.map(c => Math.round((c.width || 20) * dpm));
     const tw = cw.reduce((a, w) => a + w, 0), th = rh * mr;
     const hid = {}, sp = {};
@@ -283,7 +280,8 @@ class TSCLibWrapper {
         const h = cols[c].header || '';
         if (h) {
           const tw2 = ew(h, hfs), ox = Math.max(2, Math.round((cw[c] - tw2) / 2));
-          this._call('windowsfont', hx + ox, ty + 2, hf, hf, 1, 0, 0, fn, iconv.encode(h, 'gbk'));
+          const hEsc = h.replace(/"/g, '""');
+          this._call('sendcommand', `TEXT ${hx + ox},${ty + 2},"${fn}",0,${hf},${hf},"${hEsc}"`);
         }
         hx += cw[c];
       }
@@ -303,7 +301,8 @@ class TSCLibWrapper {
           else if (al === 'center') ox = Math.max(2, Math.round((cellW - tw2) / 2));
           else if (al === 'right') ox = Math.max(2, cellW - tw2 - 4);
           else ox = 2;
-          this._call('windowsfont', cx + ox, cy + oy, cf, cf, 0, 0, 0, fn, iconv.encode(raw, 'gbk'));
+          const rawEsc = raw.replace(/"/g, '""');
+          this._call('sendcommand', `TEXT ${cx + ox},${cy + oy},"${fn}",0,${cf},${cf},"${rawEsc}"`);
         }
         cx += cw[c];
       }
