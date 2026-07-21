@@ -369,7 +369,28 @@ class ScaleService extends EventEmitter {
    * @private
    */
   _handleWeight(weight) {
-    // Calculate average with sliding window
+    // ★ 用原始读数判断空秤（不用平均值，避免滑动窗口拖慢归零）
+    const rawRounded = Math.round(weight.value * 100) / 100;
+
+    // ① 秤空（取走货物后）→ 自动重置，emit 当前小重量让 UI 更新
+    if (rawRounded <= this.EMPTY_THRESHOLD) {
+      if (this._stableEmitted) {
+        log.info(`[ScaleService] Item removed (${rawRounded}kg <= ${this.EMPTY_THRESHOLD}kg), auto-reset`);
+        this.emit('weight', {
+          value: rawRounded,
+          unit: 'kg',
+          raw: weight.raw,
+          stable: false,
+        });
+      }
+      this.weightHistory = [];
+      this._stableEmitted = false;
+      this._stableWeight = null;
+      this.lastEmitTime = 0;
+      return;
+    }
+
+    // Calculate average with sliding window（仅在非空时计算）
     this.weightHistory.push(weight.value);
     if (this.weightHistory.length > this.averageWindow) {
       this.weightHistory.shift();
@@ -379,25 +400,6 @@ class ScaleService extends EventEmitter {
       this.weightHistory.reduce((sum, v) => sum + v, 0) /
       this.weightHistory.length;
     const avgRounded = Math.round(avg * 100) / 100;
-
-    // ① 秤空（取走货物后）→ 自动重置，emit 当前小重量让 UI 更新
-    if (avgRounded <= this.EMPTY_THRESHOLD) {
-      if (this._stableEmitted) {
-        // 之前有货物稳定过，现在取走了 → emit 一次让 UI 显示重量下降
-        log.info(`[ScaleService] Item removed (${avgRounded}kg <= ${this.EMPTY_THRESHOLD}kg), auto-reset`);
-        this.emit('weight', {
-          value: avgRounded,
-          unit: 'kg',
-          raw: weight.raw,
-          stable: false,  // ★ 秤空不发 stable
-        });
-      }
-      this.weightHistory = [];
-      this._stableEmitted = false;
-      this._stableWeight = null;
-      this.lastEmitTime = 0;
-      return;
-    }
 
     // ② 判断稳定（滑动窗口内所有值四舍五入后相同）
     const stable =
