@@ -340,6 +340,22 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
 /**
  * Inject the bridge script into the Frappe web page
  */
+// ★ 调试对话框工具（同步弹出不阻塞）
+function _debugDialog(title, detail) {
+  const msg = `[${new Date().toLocaleTimeString()}] ${title}\n\n${detail}`;
+  log.info(`[DEBUG] ${title}: ${detail}`);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '🔧 ' + title,
+      message: title,
+      detail: detail,
+      buttons: ['确定'],
+      noLink: true,
+    }).catch(() => {});
+  }
+}
+
 // ★ Debug: 自动弹出串口诊断对话框
 async function _showSerialPortDebugDialog() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -493,16 +509,44 @@ function registerIPCHandlers() {
   });
 
   ipcMain.handle('scale:connect', async (_event, port, options) => {
-    await scaleService.connect(port, options);
-    store.set('lastScalePort', port);
-    if (options) {
-      store.set('lastScaleOptions', options);
+    const optsStr = JSON.stringify(options || {});
+    log.info(`[DEBUG] scale:connect called — port=${port}, options=${optsStr}`);
+
+    // ★ 调试对话框：connect 调用前
+    _debugDialog('scale:connect 调用',
+      `即将连接端口: ${port}\n参数: ${optsStr}\n\n当前状态: connected=${scaleService.connected}, port=${scaleService.portPath}`);
+
+    try {
+      await scaleService.connect(port, options);
+      store.set('lastScalePort', port);
+      if (options) {
+        store.set('lastScaleOptions', options);
+      }
+      // ★ 调试对话框：connect 成功
+      _debugDialog('scale:connect 成功 ✅',
+        `端口 ${port} 已连接\nisOpen=${scaleService.port ? scaleService.port.isOpen : 'N/A'}\nconnected=${scaleService.connected}`);
+      return { success: true };
+    } catch (err) {
+      // ★ 调试对话框：connect 失败
+      _debugDialog('scale:connect 失败 ❌',
+        `端口: ${port}\n错误: ${err.message}\n\nStack:\n${err.stack || 'N/A'}`);
+      throw err;
     }
-    return { success: true };
   });
 
   ipcMain.handle('scale:disconnect', async () => {
-    await scaleService.disconnect();
+    log.info(`[DEBUG] scale:disconnect called — connected=${scaleService.connected}, port=${scaleService.portPath}`);
+
+    // ★ 调试对话框：disconnect 调用前
+    _debugDialog('scale:disconnect 调用',
+      `即将断开端口: ${scaleService.portPath}\n当前状态: connected=${scaleService.connected}\nisOpen=${scaleService.port ? scaleService.port.isOpen : 'N/A'}`);
+
+    try {
+      await scaleService.disconnect();
+      _debugDialog('scale:disconnect 完成 ✅', '已断开连接');
+    } catch (err) {
+      _debugDialog('scale:disconnect 失败 ❌', `错误: ${err.message}`);
+    }
     return { success: true };
   });
 
@@ -707,6 +751,10 @@ function initServices() {
   });
 
   scaleService.on('status', (status) => {
+    // ★ 调试对话框：status 回调触发时（在发给 renderer 之前）
+    _debugDialog('scaleService → onStatus',
+      `connected=${status.connected}\nport=${status.port || 'null'}\n\n即将发送给 renderer: window.electronAPI.scale.onStatus()`);
+
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('scale:status', status);
     }
@@ -714,6 +762,13 @@ function initServices() {
 
   scaleService.on('error', (error) => {
     log.error('Scale error:', error);
+    // ★ 调试对话框：error 回调触发时（在发给 renderer 之前）
+    _debugDialog('scaleService → onError ❌',
+      `错误信息: ${error.message || error}\n\nStack:\n${error.stack || 'N/A'}\n\n即将发送给 renderer: window.electronAPI.scale.onError()`);
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('scale:error', error.message || String(error));
+    }
   });
 
   printerService = new PrinterService();

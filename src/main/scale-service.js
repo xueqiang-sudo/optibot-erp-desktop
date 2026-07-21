@@ -88,7 +88,8 @@ class ScaleService extends EventEmitter {
    * @returns {Promise<void>}
    */
   async connect(portPath, options = {}) {
-    if (this.connected) {
+    // ★ 无论 connected 状态如何，只要有旧端口就清理（修复重连竞态）
+    if (this.port) {
       await this.disconnect();
     }
 
@@ -130,6 +131,7 @@ class ScaleService extends EventEmitter {
         this.buffer = Buffer.alloc(0);
         this.weightHistory = [];
         this.lastWeight = null;
+        this.lastEmitTime = 0;       // ★ 重连时重置节流时间戳
 
         log.info(`Scale connected on port: ${portPath}, baudRate: ${portOptions.baudRate}, dataBits: ${portOptions.dataBits}, parity: ${portOptions.parity}, stopBits: ${portOptions.stopBits}`);
         this.emit('status', { connected: true, port: portPath });
@@ -144,22 +146,37 @@ class ScaleService extends EventEmitter {
    */
   async disconnect() {
     return new Promise((resolve) => {
-      if (!this.port || !this.port.isOpen) {
+      if (!this.port) {
         this.connected = false;
+        this.buffer = Buffer.alloc(0);
+        this.weightHistory = [];
+        this.lastWeight = null;
+        this.lastEmitTime = 0;
         resolve();
         return;
       }
 
-      this.port.removeAllListeners();
-      this.port.close((err) => {
+      const oldPort = this.port;
+      this.port = null;              // ★ 先置空，防止旧 _onClose 误判
+      this.connected = false;
+      this.buffer = Buffer.alloc(0);
+      this.weightHistory = [];
+      this.lastWeight = null;
+      this.lastEmitTime = 0;
+
+      oldPort.removeAllListeners();
+
+      if (!oldPort.isOpen) {
+        log.info('Port already closed, cleanup done');
+        this.emit('status', { connected: false, port: null });
+        resolve();
+        return;
+      }
+
+      oldPort.close((err) => {
         if (err) {
           log.warn('Error closing serial port:', err.message);
         }
-        this.connected = false;
-        this.port = null;
-        this.buffer = Buffer.alloc(0);
-        this.weightHistory = [];
-        this.lastWeight = null;
 
         log.info('Scale disconnected');
         this.emit('status', { connected: false, port: null });
@@ -376,12 +393,26 @@ class ScaleService extends EventEmitter {
 
   /**
    * Handle serial port close
+   * ★ 只有当前活跃端口的 close 事件才更新状态，
+   *   防止旧端口的延迟 close 事件覆盖新连接。
    * @private
    */
   _onClose() {
-    log.info('Serial port closed');
+    // 如果 this.port 已被置空（disconnect 主动断开）或已换成新端口，忽略
+    if (!this.port) {
+      log.info('Serial port closed (already cleaned up by disconnect)');
+      return;
+    }
+
+    log.info(`Serial port closed: ${this.portPath}`);
     this.connected = false;
-    this.emit('status', { connected: false, port: this.portPath });
+    const closedPortPath = this.portPath;
+    this.port = null;
+    this.buffer = Buffer.alloc(0);
+    this.weightHistory = [];
+    this.lastWeight = null;
+    this.lastEmitTime = 0;
+    this.emit('status', { connected: false, port: closedPortPath });
   }
 
   /**
