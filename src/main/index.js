@@ -554,6 +554,12 @@ function registerIPCHandlers() {
     return scaleService.getStatus();
   });
 
+  // ★ 重置称重状态（用户点"开始称重"时调用）
+  ipcMain.handle('scale:reset-reading', () => {
+    scaleService.resetReading();
+    return { success: true };
+  });
+
   // ★ List all serial ports with full properties
   ipcMain.handle('serial:list-ports', async () => {
     const mapPort = (p) => ({

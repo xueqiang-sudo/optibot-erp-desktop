@@ -172,6 +172,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @returns {Promise<{connected: boolean, port: string|null}>}
      */
     getStatus: () => ipcRenderer.invoke('scale:get-status'),
+
+    /**
+     * Reset reading state for a new weighing cycle.
+     * Call this when user clicks "start reading" button.
+     * Ensures the next stable reading is always emitted.
+     */
+    resetReading: () => ipcRenderer.invoke('scale:reset-reading'),
   },
 
   /**

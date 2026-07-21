@@ -334,6 +334,20 @@ class ScaleService extends EventEmitter {
   }
 
   /**
+   * Reset reading state for a new weighing cycle.
+   * Call this when the user clicks "start reading" button.
+   * Clears lastWeight so the next stable reading is always emitted,
+   * even if the weight value is the same as the previous weighing.
+   */
+  resetReading() {
+    this.weightHistory = [];
+    this.lastWeight = null;
+    this.lastEmitTime = 0;
+    this.buffer = Buffer.alloc(0);
+    log.info('[ScaleService] Reading reset — waiting for new stable value');
+  }
+
+  /**
    * Handle a parsed weight value: averaging + throttling
    * @param {Object} weight - Parsed weight data
    * @private

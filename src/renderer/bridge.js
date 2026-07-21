@@ -101,6 +101,54 @@
       return this.currentWeight ? this.currentWeight.value : null;
     },
 
+    /**
+     * Start a new weighing cycle.
+     * Resets the scale reading state, then waits for a stable reading.
+     *
+     * Usage from Frappe:
+     *   const result = await window.OptiBotBridge.startReading(30000);
+     *   // result = { value: 10.00, unit: 'kg', stable: true, raw: '...' }
+     *
+     * @param {number} [timeoutMs=30000] - Max wait time in ms (default 30s)
+     * @returns {Promise<{value: number, unit: string, stable: boolean, raw: string}>}
+     */
+    startReading(timeoutMs = 30000) {
+      return new Promise(async (resolve, reject) => {
+        if (!this.scaleConnected) {
+          reject(new Error('电子秤未连接'));
+          return;
+        }
+
+        // 1. 重置称重状态（清除 lastWeight，确保新读数一定会触发）
+        await window.electronAPI.scale.resetReading();
+
+        // 2. 监听重量数据，等到 stable=true 就 resolve
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`称重超时 (${timeoutMs / 1000}秒)`));
+        }, timeoutMs);
+
+        const onWeight = (data) => {
+          if (data.stable) {
+            cleanup();
+            resolve(data);
+          }
+        };
+
+        const onWindowWeight = (e) => {
+          onWeight(e.detail);
+        };
+
+        const cleanup = () => {
+          clearTimeout(timer);
+          window.removeEventListener('optibot:weight', onWindowWeight);
+        };
+
+        // 通过 CustomEvent 监听（bridge 的 init 中已有 dispatchEvent('optibot:weight')）
+        window.addEventListener('optibot:weight', onWindowWeight);
+      });
+    },
+
     // ─── Printer Management ─────────────────────────────────────
 
     async listPrinters() {
