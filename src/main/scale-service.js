@@ -56,7 +56,8 @@ class ScaleService extends EventEmitter {
 
     // ★ 自动循环称重状态
     this._stableEmitted = false;                              // 当前货物是否已 emit 过 stable
-    this.EMPTY_THRESHOLD = options.emptyThreshold || 0.01;    // ≤10g 视为秤空 (kg)
+    this._stableWeight = null;                                // 上次 stable 时的重量值
+    this.EMPTY_THRESHOLD = options.emptyThreshold || 0.05;    // ≤50g 视为秤空 (kg)
 
     // Bind methods
     this._onData = this._onData.bind(this);
@@ -134,7 +135,8 @@ class ScaleService extends EventEmitter {
         this.buffer = Buffer.alloc(0);
         this.weightHistory = [];
         this.lastEmitTime = 0;
-        this._stableEmitted = false;   // ★ 重连时重置，准备第一次称重
+        this._stableEmitted = false;
+        this._stableWeight = null;
 
         log.info(`Scale connected on port: ${portPath}, baudRate: ${portOptions.baudRate}, dataBits: ${portOptions.dataBits}, parity: ${portOptions.parity}, stopBits: ${portOptions.stopBits}`);
         this.emit('status', { connected: true, port: portPath });
@@ -155,6 +157,7 @@ class ScaleService extends EventEmitter {
         this.weightHistory = [];
         this.lastEmitTime = 0;
         this._stableEmitted = false;
+        this._stableWeight = null;
         resolve();
         return;
       }
@@ -166,6 +169,7 @@ class ScaleService extends EventEmitter {
       this.weightHistory = [];
       this.lastEmitTime = 0;
       this._stableEmitted = false;
+      this._stableWeight = null;
 
       oldPort.removeAllListeners();
 
@@ -347,6 +351,7 @@ class ScaleService extends EventEmitter {
     this.weightHistory = [];
     this.lastEmitTime = 0;
     this._stableEmitted = false;
+    this._stableWeight = null;
     this.buffer = Buffer.alloc(0);
     log.info('[ScaleService] Reading reset — waiting for new stable value');
   }
@@ -355,7 +360,7 @@ class ScaleService extends EventEmitter {
    * Handle a parsed weight value: averaging + throttling + auto-reset
    *
    * 自动循环称重状态机:
-   *   秤空 (≤ 0.01kg) → 重置状态，不 emit
+   *   秤空 (≤ 0.05kg) → 重置状态，不 emit
    *   放货物，变化中  → emit stable=false（UI 实时显示）
    *   放货物，稳定了  → emit stable=true（仅一次），之后静默
    *   取走货物        → 回零自动重置，准备下一次
@@ -375,15 +380,23 @@ class ScaleService extends EventEmitter {
       this.weightHistory.length;
     const avgRounded = Math.round(avg * 100) / 100;
 
-    // ① 秤空（取走货物后）→ 自动重置，准备下一次称重
+    // ① 秤空（取走货物后）→ 自动重置，emit 当前小重量让 UI 更新
     if (avgRounded <= this.EMPTY_THRESHOLD) {
       if (this._stableEmitted) {
-        log.info(`[ScaleService] Scale empty (${avgRounded}kg < ${this.EMPTY_THRESHOLD}kg), auto-reset`);
+        // 之前有货物稳定过，现在取走了 → emit 一次让 UI 显示重量下降
+        log.info(`[ScaleService] Item removed (${avgRounded}kg <= ${this.EMPTY_THRESHOLD}kg), auto-reset`);
+        this.emit('weight', {
+          value: avgRounded,
+          unit: 'kg',
+          raw: weight.raw,
+          stable: false,  // ★ 秤空不发 stable
+        });
       }
       this.weightHistory = [];
       this._stableEmitted = false;
+      this._stableWeight = null;
       this.lastEmitTime = 0;
-      return; // 不 emit 零值
+      return;
     }
 
     // ② 判断稳定（滑动窗口内所有值四舍五入后相同）
@@ -396,6 +409,7 @@ class ScaleService extends EventEmitter {
     // ③ stable=true 且未 emit 过 → emit 一次，然后静默
     if (stable && !this._stableEmitted) {
       this._stableEmitted = true;
+      this._stableWeight = avgRounded;   // ★ 记录稳定时的重量
       this.lastEmitTime = Date.now();
       log.info(`[ScaleService] Stable weight: ${avgRounded}kg`);
       this.emit('weight', {
@@ -407,9 +421,19 @@ class ScaleService extends EventEmitter {
       return;
     }
 
-    // ④ 已 emit 过 stable → 同一件货物不再重复 emit
+    // ④ 已 emit 过 stable → 检查重量是否变化（取走/换货物）
     if (this._stableEmitted) {
-      return;
+      const drift = Math.abs(avgRounded - (this._stableWeight || 0));
+      if (drift <= 0.1) {
+        // 重量没怎么变 → 同一件货物，继续静默
+        return;
+      }
+      // 重量变化超过 0.1kg → 货物被取走或更换，重置状态
+      log.info(`[ScaleService] Weight changed (${this._stableWeight}kg → ${avgRounded}kg), resuming emissions`);
+      this._stableEmitted = false;
+      this._stableWeight = null;
+      this.weightHistory = [];
+      // 不 return，继续往下走 emit 当前值
     }
 
     // ⑤ 不稳定 → 节流 emit（让 UI 实时显示变化的读数）
@@ -457,6 +481,7 @@ class ScaleService extends EventEmitter {
     this.weightHistory = [];
     this.lastEmitTime = 0;
     this._stableEmitted = false;
+    this._stableWeight = null;
     this.emit('status', { connected: false, port: closedPortPath });
   }
 
