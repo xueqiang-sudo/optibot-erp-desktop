@@ -369,84 +369,9 @@ class ScaleService extends EventEmitter {
    * @private
    */
   _handleWeight(weight) {
-    // ★ 用原始读数判断空秤（不用平均值，避免滑动窗口拖慢归零）
-    const rawRounded = Math.round(weight.value * 100) / 100;
-
-    // ① 秤空（取走货物后）→ 自动重置，emit 当前小重量让 UI 更新
-    if (rawRounded <= this.EMPTY_THRESHOLD) {
-      if (this._stableEmitted) {
-        log.info(`[ScaleService] Item removed (${rawRounded}kg <= ${this.EMPTY_THRESHOLD}kg), auto-reset`);
-        this.emit('weight', {
-          value: rawRounded,
-          unit: 'kg',
-          raw: weight.raw,
-          stable: false,
-        });
-      }
-      this.weightHistory = [];
-      this._stableEmitted = false;
-      this._stableWeight = null;
-      this.lastEmitTime = 0;
-      return;
-    }
-
-    // Calculate average with sliding window（仅在非空时计算）
-    this.weightHistory.push(weight.value);
-    if (this.weightHistory.length > this.averageWindow) {
-      this.weightHistory.shift();
-    }
-
-    const avg =
-      this.weightHistory.reduce((sum, v) => sum + v, 0) /
-      this.weightHistory.length;
-    const avgRounded = Math.round(avg * 100) / 100;
-
-    // ② 判断稳定（滑动窗口内所有值四舍五入后相同）
-    const stable =
-      this.weightHistory.length >= 3 &&
-      this.weightHistory.every(
-        (v) => Math.round(v * 100) / 100 === avgRounded
-      );
-
-    // ③ stable=true 且未 emit 过 → emit 一次，然后静默
-    if (stable && !this._stableEmitted) {
-      this._stableEmitted = true;
-      this._stableWeight = avgRounded;   // ★ 记录稳定时的重量
-      this.lastEmitTime = Date.now();
-      log.info(`[ScaleService] Stable weight: ${avgRounded}kg`);
-      this.emit('weight', {
-        value: avgRounded,
-        unit: 'kg',
-        raw: weight.raw,
-        stable: true,
-      });
-      return;
-    }
-
-    // ④ 已 emit 过 stable → 检查重量是否变化（取走/换货物）
-    if (this._stableEmitted) {
-      const drift = Math.abs(avgRounded - (this._stableWeight || 0));
-      if (drift <= 0.1) {
-        // 重量没怎么变 → 同一件货物，继续静默
-        return;
-      }
-      // 重量变化超过 0.1kg → 货物被取走或更换，重置状态
-      log.info(`[ScaleService] Weight changed (${this._stableWeight}kg → ${avgRounded}kg), resuming emissions`);
-      this._stableEmitted = false;
-      this._stableWeight = null;
-      this.weightHistory = [];
-      // 不 return，继续往下走 emit 当前值
-    }
-
-    // ⑤ 不稳定 → 节流 emit（让 UI 实时显示变化的读数）
-    const now = Date.now();
-    if (now - this.lastEmitTime < THROTTLE_INTERVAL_MS) {
-      return;
-    }
-    this.lastEmitTime = now;
-
+    // ★ 调试模式：直接 emit 原始数据，不做任何过滤/节流/稳定判断
     this.emit('weight', {
-      value: avgRounded,
+      value: weight.value,
       unit: 'kg',
       raw: weight.raw,
       stable: false,
