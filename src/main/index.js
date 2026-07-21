@@ -318,6 +318,9 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
 
     log.info('Frappe page loaded successfully');
     _injectBridge();
+
+    // ★ 自动弹出串口诊断对话框（调试用，确认后可删除）
+    setTimeout(() => _showSerialPortDebugDialog(), 1500);
   });
 
   // Handle SPA navigation
@@ -337,6 +340,87 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
 /**
  * Inject the bridge script into the Frappe web page
  */
+// ★ Debug: 自动弹出串口诊断对话框
+async function _showSerialPortDebugDialog() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const results = [];
+
+  // 方法一：SerialPort.list()
+  let serialPortResult = '（未执行）';
+  try {
+    const { SerialPort } = require('serialport');
+    const ports = await SerialPort.list();
+    if (ports.length > 0) {
+      serialPortResult = ports.map((p) =>
+        `${p.path} | ${p.manufacturer || '-'} | ${p.friendlyName || p.path} | pnpId=${p.pnpId || '-'}`
+      ).join('\n');
+    } else {
+      serialPortResult = '返回 0 个端口';
+    }
+  } catch (err) {
+    serialPortResult = `报错: ${err.message}`;
+  }
+  results.push(`【SerialPort.list()】\n${serialPortResult}`);
+
+  // 方法二：Windows 注册表
+  if (process.platform === 'win32') {
+    try {
+      const { execSync } = require('child_process');
+      let regOutput = '';
+      try {
+        regOutput = execSync(
+          'reg query "HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM"',
+          { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+      } catch (regErr) {
+        regOutput = regErr.stdout || '';
+      }
+
+      const comPorts = [];
+      for (const line of regOutput.split('\n')) {
+        const match = line.match(/REG_SZ\s+(COM\d+)/i);
+        if (match) comPorts.push(match[1]);
+      }
+      results.push(`【reg query SERIALCOMM】\n${comPorts.length > 0 ? comPorts.join(', ') : '无结果'}\n\n原始输出:\n${regOutput.trim() || '（空）'}`);
+    } catch (err) {
+      results.push(`【reg query SERIALCOMM】\n报错: ${err.message}`);
+    }
+
+    // 方法三：wmic
+    try {
+      const { execSync } = require('child_process');
+      const wmicOutput = execSync(
+        'wmic path Win32_SerialPort get DeviceID,Caption /format:csv',
+        { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      results.push(`【wmic Win32_SerialPort】\n${wmicOutput.trim() || '（空）'}`);
+    } catch (err) {
+      results.push(`【wmic Win32_SerialPort】\n报错: ${err.message}`);
+    }
+  }
+
+  // scale:list-ports 当前结果
+  try {
+    const scalePorts = await scaleService.listPorts();
+    results.push(`【scaleService.listPorts()】\n${scalePorts.length > 0 ? JSON.stringify(scalePorts, null, 2) : '返回 0 个端口'}`);
+  } catch (err) {
+    results.push(`【scaleService.listPorts()】\n报错: ${err.message}`);
+  }
+
+  const message = results.join('\n\n────────────────────\n\n');
+  log.info('[DEBUG] Serial port diagnostic:\n' + message);
+
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: '串口诊断信息',
+    message: `平台: ${process.platform} | Electron: ${process.versions.electron} | Node: ${process.versions.node}`,
+    detail: message,
+    buttons: ['确定'],
+    noLink: true,
+  }).catch(() => {});
+}
+
 function _injectBridge() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -355,7 +439,57 @@ function _injectBridge() {
 // ─── IPC Handlers ────────────────────────────────────────────────
 function registerIPCHandlers() {
   ipcMain.handle('scale:list-ports', async () => {
-    return await scaleService.listPorts();
+    // 方法一：serialport 库
+    try {
+      const ports = await scaleService.listPorts();
+      if (ports.length > 0) return ports;
+    } catch (err) {
+      log.warn('[scale:list-ports] scaleService.listPorts() failed:', err.message);
+    }
+
+    // 方法二：Windows 注册表回退
+    if (process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        let regOutput = '';
+        try {
+          regOutput = execSync(
+            'reg query "HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM"',
+            { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+          );
+        } catch (regErr) {
+          regOutput = regErr.stdout || '';
+        }
+
+        const comPorts = [];
+        for (const line of regOutput.split('\n')) {
+          const match = line.match(/REG_SZ\s+(COM\d+)/i);
+          if (match) {
+            const comPath = match[1].toUpperCase();
+            const nameMatch = line.match(/\\Device\\(\S+)/);
+            const deviceName = nameMatch ? nameMatch[1] : comPath;
+            comPorts.push({
+              path: comPath,
+              manufacturer: 'Unknown',
+              serialNumber: '',
+              pnpId: '',
+              productId: '',
+              vendorId: '',
+              friendlyName: `${deviceName} (${comPath})`,
+            });
+          }
+        }
+
+        if (comPorts.length > 0) {
+          log.info(`[scale:list-ports] Registry fallback found ${comPorts.length} port(s)`);
+          return comPorts;
+        }
+      } catch (err) {
+        log.warn('[scale:list-ports] Windows fallback failed:', err.message);
+      }
+    }
+
+    return [];
   });
 
   ipcMain.handle('scale:connect', async (_event, port, options) => {
