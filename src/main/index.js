@@ -378,23 +378,59 @@ function registerIPCHandlers() {
 
   // ★ List all serial ports with full properties
   ipcMain.handle('serial:list-ports', async () => {
+    const mapPort = (p) => ({
+      path: p.path || '',
+      manufacturer: p.manufacturer || '',
+      serialNumber: p.serialNumber || '',
+      pnpId: p.pnpId || '',
+      locationId: p.locationId || '',
+      productId: p.productId || '',
+      vendorId: p.vendorId || '',
+      friendlyName: p.friendlyName || p.path || '',
+    });
+
+    // 方法一：使用 serialport 库（依赖原生模块）
     try {
       const { SerialPort } = require('serialport');
       const ports = await SerialPort.list();
-      return ports.map((p) => ({
-        path: p.path || '',                          // COM3, /dev/ttyUSB0
-        manufacturer: p.manufacturer || '',           // 制造商
-        serialNumber: p.serialNumber || '',           // 序列号
-        pnpId: p.pnpId || '',                        // PnP ID (Windows)
-        locationId: p.locationId || '',               // Location ID (macOS)
-        productId: p.productId || '',                 // USB Product ID
-        vendorId: p.vendorId || '',                   // USB Vendor ID
-        friendlyName: p.friendlyName || p.path || '', // 友好名称
-      }));
+      log.info(`[serial:list-ports] SerialPort.list() returned ${ports.length} port(s)`);
+      if (ports.length > 0) {
+        return ports.map(mapPort);
+      }
     } catch (err) {
-      log.error('Failed to list serial ports:', err.message);
-      return [];
+      log.warn('[serial:list-ports] SerialPort.list() failed:', err.message);
     }
+
+    // 方法二：Windows 回退 — 通过 PowerShell WMI 枚举 COM 口
+    if (process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        const cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match \'COM\\\\d+\' } | Select-Object Name, DeviceID, Manufacturer | ConvertTo-Json"';
+        const raw = execSync(cmd, { encoding: 'utf8', timeout: 10000 });
+        const items = JSON.parse(raw);
+        const list = Array.isArray(items) ? items : items ? [items] : [];
+        log.info(`[serial:list-ports] WMI fallback returned ${list.length} port(s)`);
+        return list.map((item) => {
+          const comMatch = item.Name && item.Name.match(/(COM\d+)/);
+          const comPath = comMatch ? comMatch[1] : '';
+          return {
+            path: comPath,
+            manufacturer: item.Manufacturer || '',
+            serialNumber: '',
+            pnpId: item.DeviceID || '',
+            locationId: '',
+            productId: '',
+            vendorId: '',
+            friendlyName: item.Name || comPath,
+          };
+        });
+      } catch (wmiErr) {
+        log.warn('[serial:list-ports] WMI fallback failed:', wmiErr.message);
+      }
+    }
+
+    log.warn('[serial:list-ports] All methods returned 0 ports');
+    return [];
   });
 
   ipcMain.handle('printer:list', async () => {

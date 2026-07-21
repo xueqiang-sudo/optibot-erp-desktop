@@ -57,6 +57,19 @@ jobs:
           npm cache clean --force
           npm install
 
+      # ★ Explicitly rebuild native modules for Electron's Node.js ABI
+      #   serialport uses @serialport/bindings-cpp (C++ addon) which must
+      #   match Electron's bundled Node.js version, not the system Node.js.
+      - name: Rebuild native modules for Electron
+        run: npx @electron/rebuild -f -w @serialport/bindings-cpp
+
+      - name: Verify native bindings exist
+        run: |
+          echo "=== Checking @serialport/bindings-cpp build ==="
+          find node_modules/@serialport/bindings-cpp/build -name "*.node" 2>/dev/null || echo "WARNING: No .node binary found!"
+          echo "=== Electron version ==="
+          npx electron --version 2>/dev/null || echo "Could not get electron version"
+
       - name: Get version
         id: version
         run: |
@@ -105,6 +118,15 @@ jobs:
         run: |
           npm cache clean --force
           npm install
+
+      # ★ Explicitly rebuild native modules for Electron's Node.js ABI
+      - name: Rebuild native modules for Electron
+        run: npx @electron/rebuild -f -w @serialport/bindings-cpp
+
+      - name: Verify native bindings exist
+        run: |
+          echo "=== Checking @serialport/bindings-cpp build ==="
+          find node_modules/@serialport/bindings-cpp/build -name "*.node" 2>/dev/null || echo "WARNING: No .node binary found!"
 
       - name: Get version
         id: version
