@@ -392,40 +392,103 @@ function registerIPCHandlers() {
     // 方法一：使用 serialport 库（依赖原生模块）
     try {
       const { SerialPort } = require('serialport');
+      log.info('[serial:list-ports] serialport module loaded OK');
       const ports = await SerialPort.list();
       log.info(`[serial:list-ports] SerialPort.list() returned ${ports.length} port(s)`);
       if (ports.length > 0) {
         return ports.map(mapPort);
       }
     } catch (err) {
-      log.warn('[serial:list-ports] SerialPort.list() failed:', err.message);
+      log.error('[serial:list-ports] serialport failed:', err.message);
     }
 
-    // 方法二：Windows 回退 — 通过 PowerShell WMI 枚举 COM 口
+    // 方法二：Windows 回退 — 读注册表 SERIALCOMM（不需要原生模块）
     if (process.platform === 'win32') {
       try {
         const { execSync } = require('child_process');
-        const cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match \'COM\\\\d+\' } | Select-Object Name, DeviceID, Manufacturer | ConvertTo-Json"';
-        const raw = execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-        const items = JSON.parse(raw);
-        const list = Array.isArray(items) ? items : items ? [items] : [];
-        log.info(`[serial:list-ports] WMI fallback returned ${list.length} port(s)`);
-        return list.map((item) => {
-          const comMatch = item.Name && item.Name.match(/(COM\d+)/);
-          const comPath = comMatch ? comMatch[1] : '';
-          return {
-            path: comPath,
-            manufacturer: item.Manufacturer || '',
-            serialNumber: '',
-            pnpId: item.DeviceID || '',
-            locationId: '',
-            productId: '',
-            vendorId: '',
-            friendlyName: item.Name || comPath,
-          };
-        });
-      } catch (wmiErr) {
-        log.warn('[serial:list-ports] WMI fallback failed:', wmiErr.message);
+
+        // 2a. 从注册表获取活跃的 COM 口列表
+        // HKLM\HARDWARE\DEVICEMAP\SERIALCOMM 是所有活跃串口的权威来源
+        let regOutput = '';
+        try {
+          regOutput = execSync(
+            'reg query "HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM"',
+            { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+          );
+        } catch (regErr) {
+          // stderr 可能有输出，stdout 可能也有部分结果
+          regOutput = regErr.stdout || '';
+          log.warn('[serial:list-ports] reg query stderr:', regErr.stderr || regErr.message);
+        }
+
+        log.info('[serial:list-ports] reg query raw output:', regOutput.trim());
+
+        // 解析 reg query 输出，格式如下：
+        //   \Device\Serial0    REG_SZ    COM1
+        //   \Device\VCP0       REG_SZ    COM3
+        const comPorts = [];
+        const lines = regOutput.split('\n');
+        for (const line of lines) {
+          // 匹配 REG_SZ 行，提取 COM 口号
+          const match = line.match(/REG_SZ\s+(COM\d+)/i);
+          if (match) {
+            const comPath = match[1].toUpperCase();
+            // 提取设备路径（行首有空格，不能用 ^ 锚定）
+            const nameMatch = line.match(/\\Device\\(\S+)/);
+            const deviceName = nameMatch ? nameMatch[1] : comPath;
+            comPorts.push({
+              path: comPath,
+              manufacturer: '',
+              serialNumber: '',
+              pnpId: '',
+              locationId: '',
+              productId: '',
+              vendorId: '',
+              friendlyName: `${deviceName} (${comPath})`,
+            });
+          }
+        }
+
+        log.info(`[serial:list-ports] Registry fallback found ${comPorts.length} port(s):`,
+          comPorts.map((p) => p.path).join(', '));
+
+        if (comPorts.length > 0) {
+          return comPorts;
+        }
+
+        // 2b. 注册表也为空时，尝试 wmic 作为最后手段
+        try {
+          const wmicOutput = execSync(
+            'wmic path Win32_SerialPort get DeviceID,Caption,Description /format:csv',
+            { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
+          );
+          log.info('[serial:list-ports] wmic raw output:', wmicOutput.trim());
+          const wmicPorts = [];
+          for (const line of wmicOutput.split('\n')) {
+            const cols = line.trim().split(',');
+            // CSV 格式: Node, Caption, Description, DeviceID
+            if (cols.length >= 4 && cols[3] && /^COM\d+/i.test(cols[3])) {
+              wmicPorts.push({
+                path: cols[3].trim(),
+                manufacturer: '',
+                serialNumber: '',
+                pnpId: '',
+                locationId: '',
+                productId: '',
+                vendorId: '',
+                friendlyName: (cols[1] || cols[3]).trim(),
+              });
+            }
+          }
+          if (wmicPorts.length > 0) {
+            log.info(`[serial:list-ports] WMIC fallback found ${wmicPorts.length} port(s)`);
+            return wmicPorts;
+          }
+        } catch (wmicErr) {
+          log.warn('[serial:list-ports] wmic fallback failed:', wmicErr.message);
+        }
+      } catch (fallbackErr) {
+        log.error('[serial:list-ports] Windows fallback error:', fallbackErr.message);
       }
     }
 
