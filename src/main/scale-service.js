@@ -57,7 +57,7 @@ class ScaleService extends EventEmitter {
     // ★ 自动循环称重状态
     this._stableEmitted = false;                              // 当前货物是否已 emit 过 stable
     this._stableWeight = null;                                // 上次 stable 时的重量值
-    this.EMPTY_THRESHOLD = options.emptyThreshold || 0.05;    // ≤50g 视为秤空 (kg)
+    this.EMPTY_THRESHOLD = options.emptyThreshold || 0.01;    // ≤10g 视为秤空 (kg)
 
     // Bind methods
     this._onData = this._onData.bind(this);
@@ -360,7 +360,7 @@ class ScaleService extends EventEmitter {
    * Handle a parsed weight value: averaging + throttling + auto-reset
    *
    * 自动循环称重状态机:
-   *   秤空 (≤ 0.05kg) → 重置状态，不 emit
+   *   秤空 (≤ 0.01kg) → 重置状态，不 emit
    *   放货物，变化中  → emit stable=false（UI 实时显示）
    *   放货物，稳定了  → emit stable=true（仅一次），之后静默
    *   取走货物        → 回零自动重置，准备下一次
