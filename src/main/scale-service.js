@@ -54,7 +54,7 @@ class ScaleService extends EventEmitter {
 
     // ★ 时间窗口稳定检测：记录 {value, time}，用持续时间判断稳定
     this._weightTimeline = [];
-    this.STABLE_DURATION_MS = options.stableDurationMs || 5000; // 默认 5 秒
+    this.STABLE_DURATION_MS = options.stableDurationMs || 3000; // 默认 3 秒
 
     // ★ 自动循环称重状态
     this._stableEmitted = false;                              // 当前货物是否已 emit 过 stable
@@ -392,6 +392,7 @@ class ScaleService extends EventEmitter {
    * @private
    */
   _handleWeight(weight) {
+    const now = Date.now();
     const rawRounded = Math.round(weight.value * 100) / 100;
 
     // ① 秤空（取走货物后）→ 自动重置，强制 emit 0（无视节流）
@@ -412,7 +413,7 @@ class ScaleService extends EventEmitter {
         raw: weight.raw,
         stable: false,
       });
-      this.lastEmitTime = Date.now();
+      this.lastEmitTime = now;
       return;
     }
 
@@ -425,7 +426,6 @@ class ScaleService extends EventEmitter {
     // ③ 滑动窗口（仅上升期）+ 时间线记录
     let displayValue = rawRounded;
     let avgRounded = rawRounded;
-    const now = Date.now();
     if (this._rising) {
       this.weightHistory.push(weight.value);
       if (this.weightHistory.length > 5) {
@@ -468,7 +468,7 @@ class ScaleService extends EventEmitter {
       this._stableEmitted = true;
       this._stableWeight = displayValue;
       this._fromEmpty = false;
-      this.lastEmitTime = Date.now();
+      this.lastEmitTime = now;
       log.info(`[ScaleService] Stable weight: ${displayValue}kg`);
       this.emit('weight', {
         value: displayValue,
@@ -499,12 +499,11 @@ class ScaleService extends EventEmitter {
         raw: weight.raw,
         stable: false,
       });
-      this.lastEmitTime = Date.now();
+      this.lastEmitTime = now;
       return;
     }
 
     // ⑦ 节流 emit
-    const now = Date.now();
     if (now - this.lastEmitTime < THROTTLE_INTERVAL_MS) {
       return;
     }
