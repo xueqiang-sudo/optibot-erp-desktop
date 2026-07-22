@@ -260,48 +260,33 @@ function renderTable(el, tx, ty, dpm) {
   const totalWidth = colWidths.reduce((a, w) => a + w, 0);
   const totalHeight = rowHeight * maxRows;
 
-  // ── Pre-process hidden cells and colspan info ──
-  const hiddenSet = new Set();
-  const explicitColspan = {};
+  // Pre-process hidden cells and colspan info
+  const hidden = {};
+  const colspanMap = {};
   for (const [key, override] of Object.entries(cellOverrides)) {
-    if (override?.hidden) hiddenSet.add(key);
-    if (override?.colspan > 1) explicitColspan[key] = override.colspan;
+    if (override?.hidden) hidden[key] = true;
+    if (override?.colspan > 1) colspanMap[key] = override.colspan;
   }
 
-  const isHidden = (r, c) => hiddenSet.has(`${r},${c}`);
-
-  // Effective colspan: starts from explicit colspan, default 1
-  const effectiveColspan = {};
-  for (let r = 0; r < maxRows; r++) {
-    for (let c = 0; c < cols.length; c++) {
-      effectiveColspan[`${r},${c}`] = explicitColspan[`${r},${c}`] || 1;
-    }
-  }
-
-  // ★ Hidden cell absorption:
-  //   当一行中大部分单元格被隐藏，只剩少量可见单元格时，
-  //   让可见单元格吸收 hidden 列的宽度，在总宽度内居中显示。
-  for (let r = 0; r < maxRows; r++) {
-    const visibleIndices = [];
-    for (let c = 0; c < cols.length; c++) {
-      if (!isHidden(r, c)) visibleIndices.push(c);
-    }
-    // 只有一个可见单元格时，让它占满整行
-    if (visibleIndices.length === 1) {
-      effectiveColspan[`${r},${visibleIndices[0]}`] = cols.length;
-    }
-  }
-
-  const getColspan = (r, c) => effectiveColspan[`${r},${c}`] || 1;
+  const isHidden = (r, c) => hidden[`${r},${c}`] === true;
+  const getColspan = (r, c) => colspanMap[`${r},${c}`] || 1;
 
   /**
    * Determine if a vertical grid line at column boundary c should be skipped
-   * for row r.
+   * for row r. Skip if:
+   * - A cell to the left spans past this boundary
+   * - A cell to the right (or at c) spans past this boundary
+   * - Both adjacent cells are hidden
    */
   const shouldSkipVertical = (r, c) => {
     // Check if any cell to the left spans past column c
     for (let l = c - 1; l >= 0; l--) {
       if (l + getColspan(r, l) > c) return true;
+    }
+    // Check if any cell at or right of c spans past c
+    for (let rc = c; rc < cols.length; rc++) {
+      const span = getColspan(r, rc);
+      if (span > 1 && rc < c) return true;
     }
     // Skip if both adjacent cells are hidden
     return isHidden(r, c - 1) && isHidden(r, c);
@@ -317,7 +302,25 @@ function renderTable(el, tx, ty, dpm) {
     // Horizontal grid lines (between rows)
     for (let r = 1; r < maxRows; r++) {
       const lineY = ty + r * rowHeight;
-      commands.push(`BAR ${tx},${lineY},${totalWidth},${borderThickness}`);
+      let hasHiddenInRow = false;
+      for (let c = 0; c < cols.length; c++) {
+        if (isHidden(r, c)) {
+          hasHiddenInRow = true;
+          break;
+        }
+      }
+
+      if (hasHiddenInRow) {
+        // Draw full-width line when row has hidden cells
+        commands.push(`BAR ${tx},${lineY},${totalWidth},${borderThickness}`);
+      } else {
+        // Draw per-cell line segments
+        let lx = tx;
+        for (let c = 0; c < cols.length; c++) {
+          commands.push(`BAR ${lx},${lineY},${colWidths[c]},${borderThickness}`);
+          lx += colWidths[c];
+        }
+      }
     }
 
     // Vertical grid lines (between columns)
@@ -333,14 +336,17 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // CJK characters: width ≈ fontSize (square glyphs)
-  // ASCII characters: width ≈ fontSize (conservative, avoids underestimating)
-  //   实际 ASCII 约为 0.6~0.8× fontSize，但高估比低估安全：
-  //   低估会导致自动缩小字号误触发，高估只是居中稍微偏紧。
+  // Estimates rendered text width in dots based on font size and character encoding.
+  // Multi-byte UTF-8 characters (Chinese) are wider than ASCII characters.
   const estimateTextWidth = (text, fontSize) => {
+    const charWidth = Math.max(8, fontSize);
     let width = 0;
     for (let i = 0; i < text.length; i++) {
-      width += fontSize;
+      const code = text.charCodeAt(i);
+      // UTF-8 byte length approximation:
+      // ASCII (≤0x7F) = 1 byte, 2-byte (≤0x7FF) = 2 bytes, 3-byte (≤0xFFFF) = 3 bytes
+      const byteLen = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+      width += byteLen * charWidth;
     }
     return width;
   };
@@ -349,8 +355,6 @@ function renderTable(el, tx, ty, dpm) {
   if (showHeader) {
     let hx = tx;
     const hFont = Math.max(8, headerFontSize);
-    const headerTextH = Math.round(hFont * 1.3);
-    const headerOffY = Math.max(1, Math.round((rowHeight - headerTextH) / 2));
 
     for (let c = 0; c < cols.length; c++) {
       const headerText = cols[c].header || '';
@@ -359,7 +363,7 @@ function renderTable(el, tx, ty, dpm) {
         const offsetX = Math.max(2, Math.round((colWidths[c] - textW) / 2));
         const hEsc = headerText.replace(/"/g, '""');
         commands.push(
-          `TEXT ${hx + offsetX},${ty + headerOffY},"${fontName}",0,${hFont},${hFont},"${hEsc}"`
+          `TEXT ${hx + offsetX},${ty + 2},"${fontName}",0,${hFont},${hFont},"${hEsc}"`
         );
       }
       hx += colWidths[c];
@@ -372,49 +376,44 @@ function renderTable(el, tx, ty, dpm) {
     let cellX = tx;
 
     for (let c = 0; c < cols.length; c++) {
-      if (isHidden(r, c)) {
+      const override = cellOverrides[`${r},${c}`];
+
+      if (override?.hidden) {
         cellX += colWidths[c];
         continue;
       }
 
-      const override = cellOverrides[`${r},${c}`];
       const rawContent = override?.content || '';
 
-      // Compute effective cell width (using expanded colspan)
-      const colspan = getColspan(r, c);
-      let cellW = 0;
-      for (let ci = c; ci < Math.min(c + colspan, cols.length); ci++) {
-        cellW += colWidths[ci];
-      }
-
       if (rawContent) {
-        let fontSize = override?.font_size || cellFontSize;
+        const fontSize = override?.font_size || cellFontSize;
         const alignment = cols[c].align || 'left';
 
-        // ★ Auto-shrink: only shrink when text is clearly wider than cell
-        //   因为宽度估算是近似的，只在明显溢出时才缩小，避免误触发。
-        let textW = estimateTextWidth(rawContent, fontSize);
-        if (textW > cellW) {
-          const minFont = Math.max(8, Math.round(fontSize * 0.7)); // 最多缩小 30%
-          while (textW > cellW && fontSize > minFont) {
-            fontSize--;
-            textW = estimateTextWidth(rawContent, fontSize);
+        // Compute effective cell width (accounting for colspan)
+        let cellW = colWidths[c];
+        const colspan = override?.colspan || 1;
+        if (colspan > 1) {
+          cellW = 0;
+          for (let ci = c; ci < Math.min(c + colspan, cols.length); ci++) {
+            cellW += colWidths[ci];
           }
         }
 
         const cf = Math.max(8, fontSize);
+        const textW = estimateTextWidth(rawContent, fontSize);
 
         // Vertical offset: center text within row height
-        // Estimated text height ≈ cf × 1.3 (TSPL font rendering)
-        const textH = Math.round(cf * 1.3);
-        const offsetY = Math.max(1, Math.round((rowHeight - textH) / 2));
+        const offsetY = Math.max(1, Math.round((rowHeight - cf) / 2) - Math.round(cf * 0.25));
 
         // Horizontal offset based on alignment
         let offsetX;
-        if (alignment === 'center') {
+        if (textW >= cellW) {
+          // Text wider than cell: center it (overflow both sides)
+          offsetX = Math.max(0, Math.round((cellW - textW) / 2));
+        } else if (alignment === 'center') {
           offsetX = Math.max(2, Math.round((cellW - textW) / 2));
         } else if (alignment === 'right') {
-          offsetX = Math.max(2, cellW - textW - 2);
+          offsetX = Math.max(2, cellW - textW - 4);
         } else {
           // Left-aligned (default)
           offsetX = 2;
