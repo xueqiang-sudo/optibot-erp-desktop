@@ -434,13 +434,17 @@ class ScaleService extends EventEmitter {
     if (diff < -0.02) this._rising = false;
     this._prevAvg = avgRounded;
 
-    // ④ 稳定判断（上升阶段，最后 5 个值 round 后全部相等即视为稳定）
+    // ④ 稳定判断（上升阶段，最后 5 个值 round 后极差 ≤ 0.01kg 即视为稳定）
+    //   严格相等在传感器微振荡时（如 9.99↔10.00）永远不满足，
+    //   改为极差容差：max - min ≤ 10g，允许传感器正常噪声。
     let stable = false;
     if (this.weightHistory.length >= 5) {
       const last5 = this.weightHistory
         .slice(-5)
         .map((v) => Math.round(v * 100) / 100);
-      stable = last5.every((v) => v === last5[0]);
+      const min = Math.min(...last5);
+      const max = Math.max(...last5);
+      stable = (max - min) <= 0.01;
     }
 
     // ⑤ stable + 上升期 + 从空秤开始 + 未 emit → emit 一次 stable=true
