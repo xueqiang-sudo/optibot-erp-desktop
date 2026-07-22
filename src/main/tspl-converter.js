@@ -333,13 +333,14 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // CJK characters are roughly square: width ≈ fontSize
-  // ASCII characters are roughly half-width: width ≈ fontSize × 0.6
+  // CJK characters: width ≈ fontSize (square glyphs)
+  // ASCII characters: width ≈ fontSize (conservative, avoids underestimating)
+  //   实际 ASCII 约为 0.6~0.8× fontSize，但高估比低估安全：
+  //   低估会导致自动缩小字号误触发，高估只是居中稍微偏紧。
   const estimateTextWidth = (text, fontSize) => {
     let width = 0;
     for (let i = 0; i < text.length; i++) {
-      const code = text.charCodeAt(i);
-      width += code > 0x7f ? fontSize : Math.round(fontSize * 0.6);
+      width += fontSize;
     }
     return width;
   };
@@ -390,12 +391,12 @@ function renderTable(el, tx, ty, dpm) {
         let fontSize = override?.font_size || cellFontSize;
         const alignment = cols[c].align || 'left';
 
-        // ★ Auto-shrink: if text is wider than cell, reduce font size until it fits
+        // ★ Auto-shrink: only shrink when text is clearly wider than cell
+        //   因为宽度估算是近似的，只在明显溢出时才缩小，避免误触发。
         let textW = estimateTextWidth(rawContent, fontSize);
-        const padding = 4; // 2 dots each side
-        if (textW > cellW - padding) {
-          const minFont = 8;
-          while (textW > cellW - padding && fontSize > minFont) {
+        if (textW > cellW) {
+          const minFont = Math.max(8, Math.round(fontSize * 0.7)); // 最多缩小 30%
+          while (textW > cellW && fontSize > minFont) {
             fontSize--;
             textW = estimateTextWidth(rawContent, fontSize);
           }
