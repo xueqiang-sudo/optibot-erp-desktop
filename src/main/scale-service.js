@@ -386,25 +386,24 @@ class ScaleService extends EventEmitter {
   _handleWeight(weight) {
     const rawRounded = Math.round(weight.value * 100) / 100;
 
-    // ① 秤空（取走货物后）→ 自动重置，emit 归零
+    // ① 秤空（取走货物后）→ 自动重置，强制 emit 0（无视节流）
     if (rawRounded <= this.EMPTY_THRESHOLD) {
       this.weightHistory = [];
       this._prevRaw = 0;
       this._rising = true;
-      if (this._stableEmitted || rawRounded > 0) {
-        // 需要让 UI 看到归零
-        log.info(`[ScaleService] Scale empty (${rawRounded}kg), auto-reset`);
-        this.emit('weight', {
-          value: 0,
-          unit: 'kg',
-          raw: weight.raw,
-          stable: false,
-        });
-      }
       this._stableEmitted = false;
       this._stableWeight = null;
-      this.lastEmitTime = 0;
       this._fromEmpty = true;
+
+      // 强制发送 0，绕过节流，确保 UI 立即归零
+      log.info(`[ScaleService] Scale empty (${rawRounded}kg), force emit 0`);
+      this.emit('weight', {
+        value: 0,
+        unit: 'kg',
+        raw: weight.raw,
+        stable: false,
+      });
+      this.lastEmitTime = Date.now();
       return;
     }
 
@@ -455,12 +454,26 @@ class ScaleService extends EventEmitter {
       return;
     }
 
-    // ⑥ 已 emit 过 stable，重量下降 → 清除 stable，恢复 emit
-    if (this._stableEmitted && rawRounded < (this._stableWeight || 0) - 0.02) {
-      log.info(`[ScaleService] Weight dropping (${this._stableWeight}kg → ${rawRounded}kg), resuming emissions`);
+    // ⑥ 已 emit 过 stable
+    if (this._stableEmitted) {
+      const drift = Math.abs(rawRounded - (this._stableWeight || 0));
+      if (drift <= 0.02) {
+        // 重量几乎没变 → 静默，UI 维持"稳定"
+        return;
+      }
+      // 重量变化（加重或减轻）→ 清除 stable，立即 emit（绕过节流）
+      log.info(`[ScaleService] Weight changed (${this._stableWeight}kg → ${rawRounded}kg), clearing stable`);
       this._stableEmitted = false;
       this._stableWeight = null;
       this.weightHistory = [];
+      this.emit('weight', {
+        value: displayValue,
+        unit: 'kg',
+        raw: weight.raw,
+        stable: false,
+      });
+      this.lastEmitTime = Date.now();
+      return;
     }
 
     // ⑦ 节流 emit
