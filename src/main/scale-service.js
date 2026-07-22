@@ -58,7 +58,7 @@ class ScaleService extends EventEmitter {
     this.EMPTY_THRESHOLD = options.emptyThreshold || 0.01;    // ≤10g 视为秤空 (kg)
 
     // ★ 方向感知（区分放货物 / 取货物）
-    this._prevRaw = 0;                                        // 上一帧的原始值（用于方向判断）
+    this._prevAvg = 0;                                        // 上一帧的平均值（用于方向判断）
     this._rising = true;                                      // 当前是否处于上升期
     this._fromEmpty = true;                                   // 是否从空秤状态开始（初始为 true，允许首次称重）
 
@@ -140,7 +140,7 @@ class ScaleService extends EventEmitter {
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
-        this._prevRaw = 0;
+        this._prevAvg = 0;
         this._rising = true;
         this._fromEmpty = true;
 
@@ -164,7 +164,7 @@ class ScaleService extends EventEmitter {
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
-        this._prevRaw = 0;
+        this._prevAvg = 0;
         this._rising = true;
         this._fromEmpty = true;
         resolve();
@@ -179,7 +179,7 @@ class ScaleService extends EventEmitter {
       this.lastEmitTime = 0;
       this._stableEmitted = false;
       this._stableWeight = null;
-      this._prevRaw = 0;
+      this._prevAvg = 0;
       this._rising = true;
       this._fromEmpty = true;
 
@@ -364,7 +364,7 @@ class ScaleService extends EventEmitter {
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
-    this._prevRaw = 0;
+    this._prevAvg = 0;
     this._rising = true;
     this._fromEmpty = true;
     this.buffer = Buffer.alloc(0);
@@ -390,7 +390,7 @@ class ScaleService extends EventEmitter {
     // ① 秤空（取走货物后）→ 自动重置，强制 emit 0（无视节流）
     if (rawRounded <= this.EMPTY_THRESHOLD) {
       this.weightHistory = [];
-      this._prevRaw = 0;
+      this._prevAvg = 0;
       this._rising = true;
       this._stableEmitted = false;
       this._stableWeight = null;
@@ -408,13 +408,7 @@ class ScaleService extends EventEmitter {
       return;
     }
 
-    // ② 方向感知（基于原始值，简单判断升降）
-    const diff = rawRounded - this._prevRaw;
-    if (diff > 0.02) this._rising = true;
-    if (diff < -0.02) this._rising = false;
-    this._prevRaw = rawRounded;
-
-    // ③ 滑动窗口（仅上升期）
+    // ② 滑动窗口（上升期积累，下降期清空）
     let displayValue = rawRounded;
     let avgRounded = rawRounded;
     if (this._rising) {
@@ -431,6 +425,14 @@ class ScaleService extends EventEmitter {
       // 下降期不做平均，清空历史
       this.weightHistory = [];
     }
+
+    // ③ 方向感知（基于滑动平均值，避免单帧噪声导致方向误判）
+    //   用 avgRounded 而不是 rawRounded，平均值天然过滤了传感器振荡，
+    //   只有重量真正发生明显变化（放/取货物）才会翻转方向。
+    const diff = avgRounded - this._prevAvg;
+    if (diff > 0.02) this._rising = true;
+    if (diff < -0.02) this._rising = false;
+    this._prevAvg = avgRounded;
 
     // ④ 稳定判断（上升阶段，最后 5 个值 round 后全部相等即视为稳定）
     let stable = false;
@@ -525,7 +527,7 @@ class ScaleService extends EventEmitter {
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
-    this._prevRaw = 0;
+    this._prevAvg = 0;
     this._rising = true;
     this._fromEmpty = true;
     this.emit('status', { connected: false, port: closedPortPath });
