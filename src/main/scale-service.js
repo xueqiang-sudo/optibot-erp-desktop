@@ -416,6 +416,7 @@ class ScaleService extends EventEmitter {
 
     // ③ 滑动窗口（仅上升期）
     let displayValue = rawRounded;
+    let avgRounded = rawRounded;
     if (this._rising) {
       this.weightHistory.push(weight.value);
       if (this.weightHistory.length > 5) {
@@ -424,17 +425,18 @@ class ScaleService extends EventEmitter {
       const avg =
         this.weightHistory.reduce((sum, v) => sum + v, 0) /
         this.weightHistory.length;
-      displayValue = Math.round(avg * 100) / 100;
+      avgRounded = Math.round(avg * 100) / 100;
+      displayValue = avgRounded;
     } else {
       // 下降期不做平均，清空历史
       this.weightHistory = [];
     }
 
-    // ④ 稳定判断（≥3 帧原始值 round 后相同）
+    // ④ 稳定判断（≥3 帧，每帧 round 后都等于平均值 round）
     const stable =
       this.weightHistory.length >= 3 &&
       this.weightHistory.every(
-        (v) => Math.round(v * 100) / 100 === Math.round(this.weightHistory[this.weightHistory.length - 1] * 100) / 100
+        (v) => Math.round(v * 100) / 100 === avgRounded
       );
 
     // ⑤ stable + 上升期 + 从空秤开始 + 未 emit → emit 一次 stable=true
