@@ -52,10 +52,6 @@ class ScaleService extends EventEmitter {
     // Sliding window for averaging (rising phase only, 5 samples)
     this.weightHistory = [];
 
-    // ★ 时间窗口稳定检测：记录 {value, time}，用持续时间判断稳定
-    this._weightTimeline = [];
-    this.STABLE_DURATION_MS = options.stableDurationMs || 3000; // 默认 3 秒
-
     // ★ 自动循环称重状态
     this._stableEmitted = false;                              // 当前货物是否已 emit 过 stable
     this._stableWeight = null;                                // 上次 stable 时的重量值
@@ -141,7 +137,6 @@ class ScaleService extends EventEmitter {
         this.connected = true;
         this.buffer = Buffer.alloc(0);
         this.weightHistory = [];
-        this._weightTimeline = [];
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
@@ -166,7 +161,6 @@ class ScaleService extends EventEmitter {
         this.connected = false;
         this.buffer = Buffer.alloc(0);
         this.weightHistory = [];
-        this._weightTimeline = [];
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
@@ -182,7 +176,6 @@ class ScaleService extends EventEmitter {
       this.connected = false;
       this.buffer = Buffer.alloc(0);
       this.weightHistory = [];
-      this._weightTimeline = [];
       this.lastEmitTime = 0;
       this._stableEmitted = false;
       this._stableWeight = null;
@@ -368,7 +361,6 @@ class ScaleService extends EventEmitter {
    */
   resetReading() {
     this.weightHistory = [];
-    this._weightTimeline = [];
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
@@ -398,7 +390,6 @@ class ScaleService extends EventEmitter {
     // ① 秤空（取走货物后）→ 自动重置，强制 emit 0（无视节流）
     if (rawRounded <= this.EMPTY_THRESHOLD) {
       this.weightHistory = [];
-      this._weightTimeline = [];
       this._prevRaw = 0;
       this._rising = true;
       this._stableEmitted = false;
@@ -423,7 +414,7 @@ class ScaleService extends EventEmitter {
     if (diff < -0.02) this._rising = false;
     this._prevRaw = rawRounded;
 
-    // ③ 滑动窗口（仅上升期）+ 时间线记录
+    // ③ 滑动窗口（仅上升期）
     let displayValue = rawRounded;
     let avgRounded = rawRounded;
     if (this._rising) {
@@ -436,31 +427,18 @@ class ScaleService extends EventEmitter {
         this.weightHistory.length;
       avgRounded = Math.round(avg * 100) / 100;
       displayValue = avgRounded;
-
-      // 记录时间线（用于时间维度稳定检测）
-      this._weightTimeline.push({ value: rawRounded, time: now });
-      // 只保留 STABLE_DURATION_MS 内的记录
-      while (
-        this._weightTimeline.length > 1 &&
-        now - this._weightTimeline[0].time > this.STABLE_DURATION_MS
-      ) {
-        this._weightTimeline.shift();
-      }
     } else {
-      // 下降期不做平均，清空历史和时间线
+      // 下降期不做平均，清空历史
       this.weightHistory = [];
-      this._weightTimeline = [];
     }
 
-    // ④ 稳定判断（时间维度）
-    //   在 STABLE_DURATION_MS 持续时间内的所有采样值，首尾一致即视为稳定。
-    //   用时间而不是振幅来衡量，避免不同重量晃动幅度不同的问题。
+    // ④ 稳定判断（上升阶段，最后 5 个值 round 后全部相等即视为稳定）
     let stable = false;
-    if (this._weightTimeline.length >= 3) {
-      const span = now - this._weightTimeline[0].time;
-      const oldest = this._weightTimeline[0].value;
-      const newest = this._weightTimeline[this._weightTimeline.length - 1].value;
-      stable = span >= this.STABLE_DURATION_MS && Math.abs(newest - oldest) <= 0.01;
+    if (this.weightHistory.length >= 5) {
+      const last5 = this.weightHistory
+        .slice(-5)
+        .map((v) => Math.round(v * 100) / 100);
+      stable = last5.every((v) => v === last5[0]);
     }
 
     // ⑤ stable + 上升期 + 从空秤开始 + 未 emit → emit 一次 stable=true
@@ -492,7 +470,6 @@ class ScaleService extends EventEmitter {
       this._stableEmitted = false;
       this._stableWeight = null;
       this.weightHistory = [];
-      this._weightTimeline = [];
       this.emit('weight', {
         value: displayValue,
         unit: 'kg',
@@ -545,7 +522,6 @@ class ScaleService extends EventEmitter {
     this.port = null;
     this.buffer = Buffer.alloc(0);
     this.weightHistory = [];
-    this._weightTimeline = [];
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
