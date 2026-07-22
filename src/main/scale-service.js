@@ -34,8 +34,7 @@ const FRAME_SIZE = 8;
 
 class ScaleService extends EventEmitter {
   /**
-   * @param {Object} options
-   * @param {number} [options.averageWindow=5] - Sliding window size for averaging
+   * @param {Object} [options]
    */
   constructor(options = {}) {
     super();
@@ -50,8 +49,7 @@ class ScaleService extends EventEmitter {
     // Throttle state
     this.lastEmitTime = 0;
 
-    // Sliding window for averaging
-    this.averageWindow = options.averageWindow || 5;
+    // Sliding window for averaging (rising phase only, 5 samples)
     this.weightHistory = [];
 
     // ★ 自动循环称重状态
@@ -60,8 +58,8 @@ class ScaleService extends EventEmitter {
     this.EMPTY_THRESHOLD = options.emptyThreshold || 0.01;    // ≤10g 视为秤空 (kg)
 
     // ★ 方向感知（区分放货物 / 取货物）
-    this._prevAvg = 0;                                        // 上一帧的平均值
-    this._rising = false;                                     // 当前是否处于上升期
+    this._prevRaw = 0;                                        // 上一帧的原始值（用于方向判断）
+    this._rising = true;                                      // 当前是否处于上升期
     this._fromEmpty = true;                                   // 是否从空秤状态开始（初始为 true，允许首次称重）
 
     // Bind methods
@@ -142,8 +140,8 @@ class ScaleService extends EventEmitter {
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
-        this._prevAvg = 0;
-        this._rising = false;
+        this._prevRaw = 0;
+        this._rising = true;
         this._fromEmpty = true;
 
         log.info(`Scale connected on port: ${portPath}, baudRate: ${portOptions.baudRate}, dataBits: ${portOptions.dataBits}, parity: ${portOptions.parity}, stopBits: ${portOptions.stopBits}`);
@@ -166,8 +164,8 @@ class ScaleService extends EventEmitter {
         this.lastEmitTime = 0;
         this._stableEmitted = false;
         this._stableWeight = null;
-        this._prevAvg = 0;
-        this._rising = false;
+        this._prevRaw = 0;
+        this._rising = true;
         this._fromEmpty = true;
         resolve();
         return;
@@ -181,8 +179,8 @@ class ScaleService extends EventEmitter {
       this.lastEmitTime = 0;
       this._stableEmitted = false;
       this._stableWeight = null;
-      this._prevAvg = 0;
-      this._rising = false;
+      this._prevRaw = 0;
+      this._rising = true;
       this._fromEmpty = true;
 
       oldPort.removeAllListeners();
@@ -366,22 +364,21 @@ class ScaleService extends EventEmitter {
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
-    this._prevAvg = 0;
-    this._rising = false;
+    this._prevRaw = 0;
+    this._rising = true;
     this._fromEmpty = true;
     this.buffer = Buffer.alloc(0);
     log.info('[ScaleService] Reading reset — waiting for new stable value');
   }
 
   /**
-   * Handle a parsed weight value: averaging + throttling + auto-reset + direction-aware
+   * Handle a parsed weight value: averaging (rising only) + throttling + auto-reset
    *
    * 自动循环称重状态机:
-   *   秤空 (≤ 0.01kg)      → 重置状态，emit 小重量让 UI 归零
-   *   放货物（上升期）变化中 → emit {avg, stable=false}（平均值，平滑）
-   *   放货物（上升期）稳定  → emit {avg, stable=true}（仅一次）
-   *   取货物（下降期）      → emit {raw, stable=false}（原始值，响应快）
-   *                          即使瞬间"稳定"也不 emit stable=true
+   *   秤空 (≤ 0.01kg)      → 重置状态，emit 归零让 UI 显示 0
+   *   上升期（放货物）      → 滑动窗口平均，emit 平均值
+   *   上升期稳定            → emit stable=true（仅一次）
+   *   下降期（取货物）      → 直接 emit 原始值，不做平均
    *
    * @param {Object} weight - Parsed weight data
    * @private
@@ -389,59 +386,66 @@ class ScaleService extends EventEmitter {
   _handleWeight(weight) {
     const rawRounded = Math.round(weight.value * 100) / 100;
 
-    // ① 秤空（取走货物后）→ 自动重置，emit 当前小重量让 UI 归零
+    // ① 秤空（取走货物后）→ 自动重置，emit 归零
     if (rawRounded <= this.EMPTY_THRESHOLD) {
-      if (this._stableEmitted) {
-        log.info(`[ScaleService] Item removed (${rawRounded}kg <= ${this.EMPTY_THRESHOLD}kg), auto-reset`);
+      this.weightHistory = [];
+      this._prevRaw = 0;
+      this._rising = true;
+      if (this._stableEmitted || rawRounded > 0) {
+        // 需要让 UI 看到归零
+        log.info(`[ScaleService] Scale empty (${rawRounded}kg), auto-reset`);
         this.emit('weight', {
-          value: rawRounded,
+          value: 0,
           unit: 'kg',
           raw: weight.raw,
           stable: false,
         });
       }
-      this.weightHistory = [];
       this._stableEmitted = false;
       this._stableWeight = null;
       this.lastEmitTime = 0;
-      this._prevAvg = 0;
-      this._rising = false;
-      this._fromEmpty = true;     // ★ 归零后允许下次 stable
+      this._fromEmpty = true;
       return;
     }
 
-    // ② 滑动窗口求平均
-    this.weightHistory.push(weight.value);
-    if (this.weightHistory.length > this.averageWindow) {
-      this.weightHistory.shift();
+    // ② 方向感知（基于原始值，简单判断升降）
+    const diff = rawRounded - this._prevRaw;
+    if (diff > 0.02) this._rising = true;
+    if (diff < -0.02) this._rising = false;
+    this._prevRaw = rawRounded;
+
+    // ③ 滑动窗口（仅上升期）
+    let displayValue = rawRounded;
+    if (this._rising) {
+      this.weightHistory.push(weight.value);
+      if (this.weightHistory.length > 5) {
+        this.weightHistory.shift();
+      }
+      const avg =
+        this.weightHistory.reduce((sum, v) => sum + v, 0) /
+        this.weightHistory.length;
+      displayValue = Math.round(avg * 100) / 100;
+    } else {
+      // 下降期不做平均，清空历史
+      this.weightHistory = [];
     }
-    const avg =
-      this.weightHistory.reduce((sum, v) => sum + v, 0) /
-      this.weightHistory.length;
-    const avgRounded = Math.round(avg * 100) / 100;
 
-    // ③ 方向感知：判断上升 / 下降
-    const trend = avgRounded - this._prevAvg;
-    if (trend > 0.05)  this._rising = true;    // 上升（放货物）
-    if (trend < -0.05) this._rising = false;   // 下降（取货物）
-    this._prevAvg = avgRounded;
-
-    // ④ 判断稳定（≥3 帧且每帧 round 后都等于 avgRounded）
+    // ④ 稳定判断（≥3 帧原始值 round 后相同）
     const stable =
       this.weightHistory.length >= 3 &&
       this.weightHistory.every(
-        (v) => Math.round(v * 100) / 100 === avgRounded
+        (v) => Math.round(v * 100) / 100 === Math.round(this.weightHistory[this.weightHistory.length - 1] * 100) / 100
       );
 
-    // ⑤ stable=true 且 上升期 且 从空秤开始 且未 emit 过 → emit 一次 stable=true
+    // ⑤ stable + 上升期 + 从空秤开始 + 未 emit → emit 一次 stable=true
     if (stable && !this._stableEmitted && this._rising && this._fromEmpty) {
       this._stableEmitted = true;
-      this._stableWeight = avgRounded;
-      this._fromEmpty = false;     // ★ emit 后必须重新归零才能再触发
+      this._stableWeight = displayValue;
+      this._fromEmpty = false;
       this.lastEmitTime = Date.now();
-      log.info(`[ScaleService] Stable weight: ${avgRounded}kg`);
+      log.info(`[ScaleService] Stable weight: ${displayValue}kg`);
       this.emit('weight', {
-        value: avgRounded,
+        value: displayValue,
         unit: 'kg',
         raw: weight.raw,
         stable: true,
@@ -449,27 +453,20 @@ class ScaleService extends EventEmitter {
       return;
     }
 
-    // ⑥ 已 emit 过 stable → 检查重量是否变化（取走/换货物）
-    if (this._stableEmitted) {
-      const drift = Math.abs(avgRounded - (this._stableWeight || 0));
-      if (drift <= 0.1) {
-        return;  // 同一件货物，静默
-      }
-      log.info(`[ScaleService] Weight changed (${this._stableWeight}kg → ${avgRounded}kg), resuming emissions`);
+    // ⑥ 已 emit 过 stable，重量下降 → 清除 stable，恢复 emit
+    if (this._stableEmitted && rawRounded < (this._stableWeight || 0) - 0.02) {
+      log.info(`[ScaleService] Weight dropping (${this._stableWeight}kg → ${rawRounded}kg), resuming emissions`);
       this._stableEmitted = false;
       this._stableWeight = null;
       this.weightHistory = [];
     }
 
-    // ⑦ 不稳定 → 节流 emit
+    // ⑦ 节流 emit
     const now = Date.now();
     if (now - this.lastEmitTime < THROTTLE_INTERVAL_MS) {
       return;
     }
     this.lastEmitTime = now;
-
-    // ★ 上升期用平均值（平滑），下降期用原始值（响应快）
-    const displayValue = this._rising ? avgRounded : rawRounded;
 
     this.emit('weight', {
       value: displayValue,
@@ -510,8 +507,8 @@ class ScaleService extends EventEmitter {
     this.lastEmitTime = 0;
     this._stableEmitted = false;
     this._stableWeight = null;
-    this._prevAvg = 0;
-    this._rising = false;
+    this._prevRaw = 0;
+    this._rising = true;
     this._fromEmpty = true;
     this.emit('status', { connected: false, port: closedPortPath });
   }
