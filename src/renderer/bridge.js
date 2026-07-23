@@ -61,7 +61,6 @@
       window.electronAPI.scale.onWeight((data) => {
         this.currentWeight = data;
         this._updateWeightWidget();
-        this._updateScaleWeightDialog(data);
         window.dispatchEvent(new CustomEvent('optibot:weight', { detail: data }));
       });
 
@@ -77,10 +76,8 @@
       try {
         await window.electronAPI.scale.connect(port, options);
         this.scaleConnected = true;
-        this._showScaleDialog(true, `串口 ${port} 连接成功`, null);
       } catch (err) {
         this.scaleConnected = false;
-        this._showScaleDialog(false, `串口 ${port} 连接失败`, err.message);
         throw err;
       }
     },
@@ -157,7 +154,6 @@
         }
       }
 
-      this._showPrinterDialog(this.printers);
       return this.printers;
     },
 
@@ -510,180 +506,6 @@
 
       if (success) {
         setTimeout(closeDialog, 3000);
-      }
-    },
-
-    _showPrinterDialog(printers) {
-      const existing = document.getElementById('optibot-printer-dialog');
-      if (existing) existing.remove();
-
-      const overlay = document.createElement('div');
-      overlay.id = 'optibot-printer-dialog';
-      overlay.style.cssText =
-        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
-
-      let printerHtml;
-      if (printers.length === 0) {
-        printerHtml =
-          '<div style="color:#e74c3c;font-size:15px;padding:16px;text-align:center;">' +
-          '❌ 未检测到打印机<br>' +
-          '<span style="font-size:12px;color:#999;margin-top:8px;display:block;">请确保打印机驱动已安装并在 Windows 中添加了打印机</span>' +
-          '</div>';
-      } else {
-        printerHtml =
-          '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
-          '<thead><tr style="background:#e8f5e9;">' +
-          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">名称</th>' +
-          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">驱动</th>' +
-          '<th style="padding:6px 10px;text-align:left;border-bottom:2px solid #4caf50;">端口</th>' +
-          '</tr></thead><tbody>';
-        printers.forEach((p, i) => {
-          printerHtml +=
-            `<tr style="background:${i % 2 === 0 ? '#fff' : '#f9f9f9'};">` +
-            `<td style="padding:6px 10px;border-bottom:1px solid #eee;font-weight:bold;">${p.name || '-'}</td>` +
-            `<td style="padding:6px 10px;border-bottom:1px solid #eee;">${p.driverName || '-'}</td>` +
-            `<td style="padding:6px 10px;border-bottom:1px solid #eee;">${p.port || '-'}</td>` +
-            '</tr>';
-        });
-        printerHtml += '</tbody></table>';
-      }
-
-      overlay.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:0;min-width:500px;max-width:650px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
-          <div style="background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
-            <span>🖨️ TSC 标签打印机 (${printers.length} 台)</span>
-            <button id="optibot-printer-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
-          </div>
-          <div style="padding:16px 24px;max-height:500px;overflow-y:auto;">
-            <div style="font-weight:bold;font-size:15px;margin-bottom:8px;color:#333;">✅ 已安装的打印机 (TSPL 指令打印)</div>
-            ${printerHtml}
-            <div style="margin-top:12px;padding:10px;background:#f0f7ff;border-radius:6px;font-size:12px;color:#555;">
-              <b>提示：</b>通过纯 JS 生成 TSPL 指令，经 Windows Spooler RAW 模式直接打印。
-              中文使用打印机内置字库（如 SourceHa.TTF、SimsunEx），在 TEXT 指令中直接引用字库名称。
-            </div>
-          </div>
-          <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">
-            <button id="optibot-printer-dialog-refresh" style="background:#1a73e8;color:#fff;border:none;padding:8px 20px;border-radius:6px;font-size:14px;cursor:pointer;margin-right:8px;">🔄 刷新</button>
-            <button id="optibot-printer-dialog-ok" style="background:#e0e0e0;color:#333;border:none;padding:8px 20px;border-radius:6px;font-size:14px;cursor:pointer;">确定</button>
-          </div>
-        </div>
-      `;
-
-      document.body.appendChild(overlay);
-
-      const closeDialog = () => overlay.remove();
-      document.getElementById('optibot-printer-dialog-close').onclick = closeDialog;
-      document.getElementById('optibot-printer-dialog-ok').onclick = closeDialog;
-      overlay.onclick = (e) => { if (e.target === overlay) closeDialog(); };
-
-      document.getElementById('optibot-printer-dialog-refresh').onclick = async () => {
-        overlay.remove();
-        await this.listPrinters();
-      };
-    },
-
-    /**
-     * Show scale connection result dialog (success or failure)
-     * @param {boolean} success
-     * @param {string} message
-     * @param {string|null} errorMsg
-     * @private
-     */
-    _showScaleDialog(success, message, errorMsg) {
-      const existing = document.getElementById('optibot-scale-dialog');
-      if (existing) existing.remove();
-
-      const overlay = document.createElement('div');
-      overlay.id = 'optibot-scale-dialog';
-      overlay.style.cssText =
-        'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;';
-
-      const icon = success ? '✅' : '❌';
-      const titleBg = success
-        ? 'linear-gradient(135deg,#43a047,#2e7d32)'
-        : 'linear-gradient(135deg,#e53935,#c62828)';
-
-      const errorHtml = errorMsg
-        ? `<div style="margin:12px 0;padding:10px;background:#ffebee;border-radius:6px;color:#c62828;font-size:13px;"><b>原因：</b>${errorMsg}</div>`
-        : '';
-
-      overlay.innerHTML = `
-        <div style="background:#fff;border-radius:12px;padding:0;min-width:360px;max-width:450px;box-shadow:0 8px 32px rgba(0,0,0,0.3);font-family:-apple-system,sans-serif;overflow:hidden;">
-          <div style="background:${titleBg};color:#fff;padding:16px 24px;font-size:18px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
-            <span>${icon} 电子秤连接</span>
-            <button id="optibot-scale-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:32px;height:32px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
-          </div>
-          <div style="padding:16px 24px;">
-            <div style="font-size:15px;color:#333;">${message}</div>
-            ${errorHtml}
-          </div>
-          <div style="padding:12px 24px;background:#f5f5f5;text-align:right;border-top:1px solid #eee;">
-            <button id="optibot-scale-dialog-ok" style="background:#1a73e8;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:14px;cursor:pointer;">确定</button>
-          </div>
-        </div>
-      `;
-
-      document.body.appendChild(overlay);
-
-      const closeDialog = () => overlay.remove();
-      document.getElementById('optibot-scale-dialog-close').onclick = closeDialog;
-      document.getElementById('optibot-scale-dialog-ok').onclick = closeDialog;
-      overlay.onclick = (e) => { if (e.target === overlay) closeDialog(); };
-
-      // Auto-close success after 3 seconds
-      if (success) setTimeout(closeDialog, 3000);
-    },
-
-    /**
-     * Update or create a floating weight dialog showing current weight
-     * @param {Object} data - Weight data { value, unit, stable, raw }
-     * @private
-     */
-    _updateScaleWeightDialog(data) {
-      let dialog = document.getElementById('optibot-weight-dialog');
-
-      if (!dialog) {
-        dialog = document.createElement('div');
-        dialog.id = 'optibot-weight-dialog';
-        dialog.style.cssText =
-          'position:fixed;top:20px;right:20px;background:#fff;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.2);z-index:999998;min-width:200px;font-family:-apple-system,sans-serif;overflow:hidden;';
-
-        dialog.innerHTML = `
-          <div style="background:linear-gradient(135deg,#1a73e8,#1557b0);color:#fff;padding:10px 16px;font-size:14px;font-weight:bold;display:flex;justify-content:space-between;align-items:center;">
-            <span>⚖️ 电子秤重量</span>
-            <button id="optibot-weight-dialog-close" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:24px;height:24px;border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
-          </div>
-          <div style="padding:16px;text-align:center;">
-            <div id="optibot-weight-dialog-value" style="font-size:32px;font-weight:bold;color:#333;">-- kg</div>
-            <div id="optibot-weight-dialog-status" style="font-size:12px;color:#999;margin-top:6px;">等待数据...</div>
-          </div>
-        `;
-
-        document.body.appendChild(dialog);
-
-        // Close handler: hide dialog but keep receiving data
-        document.getElementById('optibot-weight-dialog-close').onclick = () => {
-          dialog.style.display = 'none';
-        };
-
-        // Make draggable
-        this._makeDraggable(dialog);
-      }
-
-      dialog.style.display = '';
-
-      // Update values
-      const valueEl = document.getElementById('optibot-weight-dialog-value');
-      const statusEl = document.getElementById('optibot-weight-dialog-status');
-
-      if (valueEl) {
-        valueEl.textContent = `${data.value} ${data.unit || 'kg'}`;
-        valueEl.style.color = data.stable ? '#2e7d32' : '#f57c00';
-      }
-
-      if (statusEl) {
-        statusEl.textContent = data.stable ? '✓ 稳定' : '○ 读取中...';
-        statusEl.style.color = data.stable ? '#4caf50' : '#ff9800';
       }
     },
 
