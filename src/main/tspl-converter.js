@@ -336,17 +336,15 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // Estimates rendered text width in dots based on font size and character encoding.
-  // Multi-byte UTF-8 characters (Chinese) are wider than ASCII characters.
+  // TrueType vector fonts: xMul/yMul specify absolute glyph cell size in dots.
+  // ASCII glyphs occupy ~60% of cell width (half-width), CJK glyphs ~100% (full-width).
   const estimateTextWidth = (text, fontSize) => {
     const charWidth = Math.max(8, fontSize);
     let width = 0;
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
-      // UTF-8 byte length approximation:
-      // ASCII (≤0x7F) = 1 byte, 2-byte (≤0x7FF) = 2 bytes, 3-byte (≤0xFFFF) = 3 bytes
-      const byteLen = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
-      width += byteLen * charWidth;
+      const factor = code <= 0x7f ? 0.6 : 1.0;
+      width += charWidth * factor;
     }
     return width;
   };
@@ -399,8 +397,14 @@ function renderTable(el, tx, ty, dpm) {
           }
         }
 
-        const cf = Math.max(8, fontSize);
-        const textW = estimateTextWidth(rawContent, fontSize);
+        let cf = Math.max(8, fontSize);
+        let textW = estimateTextWidth(rawContent, cf);
+
+        // Auto-shrink font to fit cell width (minimum 6 dots)
+        while (textW > cellW && cf > 6) {
+          cf -= 1;
+          textW = estimateTextWidth(rawContent, cf);
+        }
 
         // Vertical offset: center text within row height
         const offsetY = Math.max(1, Math.round((rowHeight - cf) / 2) - Math.round(cf * 0.25));
@@ -408,7 +412,7 @@ function renderTable(el, tx, ty, dpm) {
         // Horizontal offset based on alignment
         let offsetX;
         if (textW >= cellW) {
-          // Text wider than cell: center it (overflow both sides)
+          // Text still wider than cell after shrinking: center it
           offsetX = Math.max(0, Math.round((cellW - textW) / 2));
         } else if (alignment === 'center') {
           offsetX = Math.max(2, Math.round((cellW - textW) / 2));
