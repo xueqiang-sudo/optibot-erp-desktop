@@ -22,8 +22,6 @@
   }
   window._optibotBridgeInitialized = true;
 
-  console.log('[OptiBot Bridge] Initializing hardware bridge...');
-
   // ─── Bridge API ──────────────────────────────────────────────
   window.OptiBotBridge = {
     version: '3.1.0',
@@ -56,7 +54,6 @@
 
       try {
         await this.listPrinters();
-        console.log('[OptiBot Bridge] Printers found:', this.printers.length);
       } catch (err) {
         console.warn('[OptiBot Bridge] Printer discovery failed:', err);
       }
@@ -65,9 +62,6 @@
         this.currentWeight = data;
         this._updateWeightWidget();
         this._updateScaleWeightDialog(data);
-        // Log weight data to debug file
-        const logLine = `[${new Date().toISOString()}] weight=${data.value} unit=${data.unit} stable=${data.stable} raw=${data.raw}\n`;
-        window.electronAPI.app.debugLog(logLine).catch(() => {});
         window.dispatchEvent(new CustomEvent('optibot:weight', { detail: data }));
       });
 
@@ -77,7 +71,6 @@
         window.dispatchEvent(new CustomEvent('optibot:scale-status', { detail: status }));
       });
 
-      console.log('[OptiBot Bridge] Initialized');
     },
 
     async connectScale(port, options) {
@@ -180,7 +173,6 @@
       }
 
       this.currentPrinter = printer;
-      console.log(`[OptiBot Bridge] Default printer set: ${printer.name} (${printer.id})`);
       return printer;
     },
 
@@ -249,8 +241,6 @@
 
       // Normalize elements — ensure all fields are present and properly typed
       const normalizedElements = elements.map((el, i) => {
-        console.log(`[OptiBot Bridge] Element ${i}: type=${el.type}, x=${el.x}, y=${el.y}`);
-
         switch (el.type) {
           case 'text':
           case 'date':
@@ -336,9 +326,6 @@
      */
     async printFromJSON(json) {
       try {
-        console.log('[OptiBot Bridge] printFromJSON input type:', typeof json,
-          'constructor:', json ? json.constructor.name : 'null');
-
         if (typeof json === 'string') {
           json = JSON.parse(json);
         }
@@ -379,13 +366,7 @@
           throw new Error('elements must be an array, got: ' + typeof json.elements);
         }
 
-        console.log(
-          `[OptiBot Bridge] printFromJSON: ${json.elements.length} elements, ` +
-          `${json.width}x${json.height}mm`
-        );
-
         const labelConfig = this.buildLabelConfig(json);
-        console.log('[OptiBot Bridge] Built label config:', JSON.stringify(labelConfig).substring(0, 200));
         return await this.printLabel(labelConfig);
       } catch (err) {
         console.error('[OptiBot Bridge] printFromJSON error:', err.message, err.stack);
@@ -676,7 +657,6 @@
             <div id="optibot-weight-dialog-value" style="font-size:32px;font-weight:bold;color:#333;">-- kg</div>
             <div id="optibot-weight-dialog-status" style="font-size:12px;color:#999;margin-top:6px;">等待数据...</div>
           </div>
-          <div id="optibot-weight-dialog-debug" style="padding:8px 12px;background:#f5f5f5;border-top:1px solid #eee;font-size:11px;color:#666;font-family:monospace;line-height:1.6;word-break:break-all;"></div>
         `;
 
         document.body.appendChild(dialog);
@@ -704,20 +684,6 @@
       if (statusEl) {
         statusEl.textContent = data.stable ? '✓ 稳定' : '○ 读取中...';
         statusEl.style.color = data.stable ? '#4caf50' : '#ff9800';
-      }
-
-      // Debug info
-      const debugEl = document.getElementById('optibot-weight-dialog-debug');
-      if (debugEl && data.debug) {
-        const d = data.debug;
-        const hist = d.history.length > 0 ? d.history.join(', ') : '(空)';
-        debugEl.innerHTML =
-          `<b>history[${d.history.length}]:</b> ${hist}<br>` +
-          `<b>rising:</b> ${d.rising} ` +
-          `<b>fromEmpty:</b> ${d.fromEmpty} ` +
-          `<b>stableEmitted:</b> ${d.stableEmitted}<br>` +
-          `<b>prevAvg:</b> ${d.prevAvg} ` +
-          `<b>stable:</b> <span style="color:${d.stable ? '#2e7d32' : '#c62828'};font-weight:bold">${d.stable}</span>`;
       }
     },
 

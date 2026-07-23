@@ -335,22 +335,9 @@ class PrinterService extends EventEmitter {
     const buffer = Buffer.from(data, 'utf-8');
     const base64Data = buffer.toString('base64');
 
-    // ★ Debug: save TSPL data to application directory for manual testing
-    // process.execPath = the .exe location (writable), works in both dev and packaged mode
-    const appDir = path.dirname(process.execPath);
-    const debugFile = path.join(appDir, 'debug-last-tspl.txt');
-    try {
-      fs.writeFileSync(debugFile, data, 'utf-8');
-      log.info(`[PrinterService] TSPL saved to: ${debugFile}`);
-    } catch (e) {
-      // Ignore debug file errors
-    }
-
     log.info(
-      `[PrinterService] Sending raw data to "${printerId}" (${buffer.length} bytes, ${data.length} chars)`
+      `[PrinterService] Sending raw data to "${printerId}" (${buffer.length} bytes)`
     );
-    // Log first 200 chars of TSPL for debugging
-    log.info(`[PrinterService] TSPL preview:\n${data.substring(0, 200)}`);
 
     // Build the PowerShell script with embedded base64 data
     const docName = `TSPL Label ${new Date().toISOString().replace(/[:.]/g, '-')}`;

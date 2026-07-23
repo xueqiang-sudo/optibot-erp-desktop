@@ -387,16 +387,6 @@ class ScaleService extends EventEmitter {
     const now = Date.now();
     const rawRounded = Math.round(weight.value * 100) / 100;
 
-    // ★ 构建调试信息（随每次 emit 发送到 UI）
-    const buildDebug = (stableFlag) => ({
-      history: this.weightHistory.map((v) => Math.round(v * 100) / 100),
-      rising: this._rising,
-      fromEmpty: this._fromEmpty,
-      stableEmitted: this._stableEmitted,
-      stable: stableFlag,
-      prevAvg: this._prevAvg,
-    });
-
     // ① 秤空（取走货物后）→ 自动重置，强制 emit 0（无视节流）
     if (rawRounded <= this.EMPTY_THRESHOLD) {
       this.weightHistory = [];
@@ -413,7 +403,6 @@ class ScaleService extends EventEmitter {
         unit: 'kg',
         raw: weight.raw,
         stable: false,
-        debug: buildDebug(false),
       });
       this.lastEmitTime = now;
       return;
@@ -468,7 +457,6 @@ class ScaleService extends EventEmitter {
         unit: 'kg',
         raw: weight.raw,
         stable: true,
-        debug: buildDebug(true),
       });
       return;
     }
@@ -491,7 +479,6 @@ class ScaleService extends EventEmitter {
         unit: 'kg',
         raw: weight.raw,
         stable: false,
-        debug: buildDebug(false),
       });
       this.lastEmitTime = now;
       return;
@@ -508,7 +495,6 @@ class ScaleService extends EventEmitter {
       unit: 'kg',
       raw: weight.raw,
       stable: false,
-      debug: buildDebug(false),
     });
   }
 

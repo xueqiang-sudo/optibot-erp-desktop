@@ -110,7 +110,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * Usage:
    *   const ports = await window.electronAPI.scale.listPorts();
    *   await window.electronAPI.scale.connect('/dev/ttyUSB0');
-   *   window.electronAPI.scale.onWeight((data) => console.log(data));
+   *   window.electronAPI.scale.onWeight((data) => { ... });
    */
   scale: {
     /**
@@ -273,13 +273,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setConfig: (key, value) => ipcRenderer.invoke('app:set-config', key, value),
 
     /**
-     * Append text to debug log file (debug-scale.log in app directory)
-     * @param {string} text - Text to append
-     * @returns {Promise<boolean>}
-     */
-    debugLog: (text) => ipcRenderer.invoke('app:debug-log', text),
-
-    /**
      * Register callback for menu actions
      * @param {function} callback - Called with action name string
      */
@@ -297,5 +290,3 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 });
 
-// Log that preload is ready
-console.log('[OptiBot ERP] Desktop API loaded. Access via window.electronAPI');

@@ -2,19 +2,11 @@
  * OptiBot ERP Desktop Application - Main Process Entry Point
  */
 
-// ★ Early diagnostic — before ANY module loading
-const _diagFile = require('path').join(require('os').tmpdir(), 'optibot-startup-diag.txt');
-const _diag = (msg) => { try { require('fs').appendFileSync(_diagFile, `[${new Date().toISOString()}] ${msg}\n`); } catch (e) {} };
-_diag('=== App startup begin ===');
-
 const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
-_diag('electron loaded');
 const path = require('path');
 const fs = require('fs');
 const log = require('electron-log');
-_diag('electron-log loaded');
 const Store = require('electron-store');
-_diag('electron-store loaded');
 
 // ★ Global flag shared across modules
 global.isQuitting = false;
@@ -22,15 +14,10 @@ global.isQuitting = false;
 // ★ Remove menu BEFORE app ready
 Menu.setApplicationMenu(null);
 
-_diag('loading scale-service...');
 const ScaleService = require('./scale-service');
-_diag('loading printer-service...');
 const PrinterService = require('./printer-service');
-_diag('loading tray...');
 const TrayManager = require('./tray');
-_diag('loading updater...');
 const UpdaterService = require('./updater');
-_diag('=== All modules loaded ===');
 
 // ─── Configuration ───────────────────────────────────────────────
 const FRAPPE_URL = 'http://erp.optibot.cn:8080/';
@@ -318,9 +305,6 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
 
     log.info('Frappe page loaded successfully');
     _injectBridge();
-
-    // ★ 自动弹出串口诊断对话框（调试用，确认后可删除）
-    // setTimeout(() => _showSerialPortDebugDialog(), 1500);
   });
 
   // Handle SPA navigation
@@ -340,103 +324,6 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
 /**
  * Inject the bridge script into the Frappe web page
  */
-// ★ 调试对话框工具（同步弹出不阻塞）
-function _debugDialog(title, detail) {
-  const msg = `[${new Date().toLocaleTimeString()}] ${title}\n\n${detail}`;
-  log.info(`[DEBUG] ${title}: ${detail}`);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: '🔧 ' + title,
-      message: title,
-      detail: detail,
-      buttons: ['确定'],
-      noLink: true,
-    }).catch(() => {});
-  }
-}
-
-// ★ Debug: 自动弹出串口诊断对话框
-async function _showSerialPortDebugDialog() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-
-  const results = [];
-
-  // 方法一：SerialPort.list()
-  let serialPortResult = '（未执行）';
-  try {
-    const { SerialPort } = require('serialport');
-    const ports = await SerialPort.list();
-    if (ports.length > 0) {
-      serialPortResult = ports.map((p) =>
-        `${p.path} | ${p.manufacturer || '-'} | ${p.friendlyName || p.path} | pnpId=${p.pnpId || '-'}`
-      ).join('\n');
-    } else {
-      serialPortResult = '返回 0 个端口';
-    }
-  } catch (err) {
-    serialPortResult = `报错: ${err.message}`;
-  }
-  results.push(`【SerialPort.list()】\n${serialPortResult}`);
-
-  // 方法二：Windows 注册表
-  if (process.platform === 'win32') {
-    try {
-      const { execSync } = require('child_process');
-      let regOutput = '';
-      try {
-        regOutput = execSync(
-          'reg query "HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM"',
-          { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
-        );
-      } catch (regErr) {
-        regOutput = regErr.stdout || '';
-      }
-
-      const comPorts = [];
-      for (const line of regOutput.split('\n')) {
-        const match = line.match(/REG_SZ\s+(COM\d+)/i);
-        if (match) comPorts.push(match[1]);
-      }
-      results.push(`【reg query SERIALCOMM】\n${comPorts.length > 0 ? comPorts.join(', ') : '无结果'}\n\n原始输出:\n${regOutput.trim() || '（空）'}`);
-    } catch (err) {
-      results.push(`【reg query SERIALCOMM】\n报错: ${err.message}`);
-    }
-
-    // 方法三：wmic
-    try {
-      const { execSync } = require('child_process');
-      const wmicOutput = execSync(
-        'wmic path Win32_SerialPort get DeviceID,Caption /format:csv',
-        { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-      results.push(`【wmic Win32_SerialPort】\n${wmicOutput.trim() || '（空）'}`);
-    } catch (err) {
-      results.push(`【wmic Win32_SerialPort】\n报错: ${err.message}`);
-    }
-  }
-
-  // scale:list-ports 当前结果
-  try {
-    const scalePorts = await scaleService.listPorts();
-    results.push(`【scaleService.listPorts()】\n${scalePorts.length > 0 ? JSON.stringify(scalePorts, null, 2) : '返回 0 个端口'}`);
-  } catch (err) {
-    results.push(`【scaleService.listPorts()】\n报错: ${err.message}`);
-  }
-
-  const message = results.join('\n\n────────────────────\n\n');
-  log.info('[DEBUG] Serial port diagnostic:\n' + message);
-
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: '串口诊断信息',
-    message: `平台: ${process.platform} | Electron: ${process.versions.electron} | Node: ${process.versions.node}`,
-    detail: message,
-    buttons: ['确定'],
-    noLink: true,
-  }).catch(() => {});
-}
-
 function _injectBridge() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -509,12 +396,7 @@ function registerIPCHandlers() {
   });
 
   ipcMain.handle('scale:connect', async (_event, port, options) => {
-    const optsStr = JSON.stringify(options || {});
-    log.info(`[DEBUG] scale:connect called — port=${port}, options=${optsStr}`);
-
-    // ★ 调试对话框：connect 调用前
-    // _debugDialog('scale:connect 调用',
-    //   `即将连接端口: ${port}\n参数: ${optsStr}\n\n当前状态: connected=${scaleService.connected}, port=${scaleService.portPath}`);
+    log.info(`scale:connect called — port=${port}`);
 
     try {
       await scaleService.connect(port, options);
@@ -522,30 +404,19 @@ function registerIPCHandlers() {
       if (options) {
         store.set('lastScaleOptions', options);
       }
-      // ★ 调试对话框：connect 成功
-      // _debugDialog('scale:connect 成功 ✅',
-      //   `端口 ${port} 已连接\nisOpen=${scaleService.port ? scaleService.port.isOpen : 'N/A'}\nconnected=${scaleService.connected}`);
       return { success: true };
     } catch (err) {
-      // ★ 调试对话框：connect 失败
-      // _debugDialog('scale:connect 失败 ❌',
-      //   `端口: ${port}\n错误: ${err.message}\n\nStack:\n${err.stack || 'N/A'}`);
       throw err;
     }
   });
 
   ipcMain.handle('scale:disconnect', async () => {
-    log.info(`[DEBUG] scale:disconnect called — connected=${scaleService.connected}, port=${scaleService.portPath}`);
-
-    // ★ 调试对话框：disconnect 调用前
-    // _debugDialog('scale:disconnect 调用',
-    //   `即将断开端口: ${scaleService.portPath}\n当前状态: connected=${scaleService.connected}\nisOpen=${scaleService.port ? scaleService.port.isOpen : 'N/A'}`);
+    log.info(`scale:disconnect called`);
 
     try {
       await scaleService.disconnect();
-      // _debugDialog('scale:disconnect 完成 ✅', '已断开连接');
     } catch (err) {
-      // _debugDialog('scale:disconnect 失败 ❌', `错误: ${err.message}`);
+      log.warn('scale:disconnect error:', err.message);
     }
     return { success: true };
   });
@@ -700,18 +571,6 @@ function registerIPCHandlers() {
     return printerService.getStatus();
   });
 
-  // ★ Debug log: append text to debug log file in app directory
-  ipcMain.handle('app:debug-log', (_event, text) => {
-    try {
-      const logFile = path.join(path.dirname(process.execPath), 'debug-scale.log');
-      fs.appendFileSync(logFile, text, 'utf-8');
-      return true;
-    } catch (err) {
-      log.warn('Debug log write failed:', err.message);
-      return false;
-    }
-  });
-
   ipcMain.handle('app:get-version', () => {
     return app.getVersion();
   });
@@ -757,10 +616,6 @@ function initServices() {
   });
 
   scaleService.on('status', (status) => {
-    // ★ 调试对话框：status 回调触发时（在发给 renderer 之前）
-    // _debugDialog('scaleService → onStatus',
-    //   `connected=${status.connected}\nport=${status.port || 'null'}\n\n即将发送给 renderer: window.electronAPI.scale.onStatus()`);
-
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('scale:status', status);
     }
@@ -768,9 +623,6 @@ function initServices() {
 
   scaleService.on('error', (error) => {
     log.error('Scale error:', error);
-    // ★ 调试对话框：error 回调触发时（在发给 renderer 之前）
-    // _debugDialog('scaleService → onError ❌',
-    //   `错误信息: ${error.message || error}\n\nStack:\n${error.stack || 'N/A'}\n\n即将发送给 renderer: window.electronAPI.scale.onError()`);
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('scale:error', error.message || String(error));
