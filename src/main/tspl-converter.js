@@ -336,8 +336,8 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // TrueType vector fonts: TEXT x,y,"font",0,W,H,"text" — W/H are advance width/height in dots.
-  // ASCII: advance = W per char (factor 1). CJK: advance ≈ 2×W per char (full-width, factor 2).
+  // TrueType vector fonts in TSPL: TEXT x,y,"font",0,W,H,"text"
+  // ASCII advance = W × 1 per char, CJK advance = W × 2 per char (full-width).
   const estimateTextWidth = (text, fontSize) => {
     const charWidth = Math.max(8, fontSize);
     let width = 0;
@@ -400,8 +400,8 @@ function renderTable(el, tx, ty, dpm) {
         let cf = Math.max(8, fontSize);
         let textW = estimateTextWidth(rawContent, cf);
 
-        // Auto-shrink font to fit cell width (minimum 6 dots)
-        while (textW > cellW && cf > 6) {
+        // Auto-shrink font to fit cell width (minimum 8 dots)
+        while (textW > cellW && cf > 8) {
           cf -= 1;
           textW = estimateTextWidth(rawContent, cf);
         }
@@ -412,8 +412,8 @@ function renderTable(el, tx, ty, dpm) {
         // Horizontal offset based on alignment
         let offsetX;
         if (textW >= cellW) {
-          // Text still wider than cell after shrinking: center it
-          offsetX = Math.max(0, Math.round((cellW - textW) / 2));
+          // Text still wider than cell after shrinking: left-align
+          offsetX = 2;
         } else if (alignment === 'center') {
           offsetX = Math.max(2, Math.round((cellW - textW) / 2));
         } else if (alignment === 'right') {
