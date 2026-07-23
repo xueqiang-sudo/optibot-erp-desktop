@@ -336,14 +336,14 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // TrueType vector fonts: xMul/yMul specify absolute glyph cell size in dots.
-  // ASCII glyphs occupy ~60% of cell width (half-width), CJK glyphs ~100% (full-width).
+  // TrueType vector fonts: TEXT x,y,"font",0,W,H,"text" — W/H are advance width/height in dots.
+  // ASCII: advance = W per char (factor 1). CJK: advance ≈ 2×W per char (full-width, factor 2).
   const estimateTextWidth = (text, fontSize) => {
     const charWidth = Math.max(8, fontSize);
     let width = 0;
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
-      const factor = code <= 0x7f ? 0.6 : 1.0;
+      const factor = code <= 0x7f ? 1 : 2;
       width += charWidth * factor;
     }
     return width;
