@@ -336,17 +336,18 @@ function renderTable(el, tx, ty, dpm) {
   }
 
   // ── Text width estimation for alignment ──
-  // TrueType vector fonts in TSPL: TEXT x,y,"font",0,W,H,"text"
-  // ASCII advance = W × 1 per char, CJK advance = W × 2 per char (full-width).
+  // Calibrated for SourceHa.TTF on TSPL TrueType:
+  //   ASCII advance = fontSize × 4/3 per char  (e.g. 12→16 dots = 2mm)
+  //   CJK advance   = fontSize × 8/3 per char  (e.g. 12→32 dots = 4mm)
   const estimateTextWidth = (text, fontSize) => {
     const charWidth = Math.max(8, fontSize);
     let width = 0;
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
-      const factor = code <= 0x7f ? 1 : 2;
+      const factor = code <= 0x7f ? 4 : 8;
       width += charWidth * factor;
     }
-    return width;
+    return Math.round(width / 3);
   };
 
   // ── Render header row ──
