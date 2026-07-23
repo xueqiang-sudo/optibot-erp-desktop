@@ -176,7 +176,7 @@ function renderBarcode(el, x, y) {
  * TSPL QRCODE command: QRCODE x,y,EClevel,cellSize,mode,rotation,"content"
  * - EClevel: L/M/Q/H error correction
  * - cellSize: size of each QR module in dots
- * - mode: A=auto
+ * - mode: M2=8-bit byte mode (handles control chars and UTF-8)
  * - rotation: 0/90/180/270
  *
  * GS1 mode: prepend ">8" to content (GS1 Application Identifier prefix)
@@ -197,7 +197,7 @@ function renderQRCode(el, x, y) {
 
   const size = el.size || 6;
 
-  return [`QRCODE ${x},${y},L,${size},A,0,"${content}"`];
+  return [`QRCODE ${x},${y},L,${size},M2,0,"${content}"`];
 }
 
 /**
