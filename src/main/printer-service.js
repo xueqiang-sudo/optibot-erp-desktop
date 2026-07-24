@@ -275,8 +275,11 @@ class PrinterService extends EventEmitter {
     const elCount = labelConfig.elements ? labelConfig.elements.length : 0;
     log.info(`[PrinterService] Label: ${labelConfig.width}×${labelConfig.height}mm, ${elCount} elements, ${labelConfig.copies || 1} copies`);
 
-    // Step 1: Generate TSPL command string from JSON config
+    // Step 1: Generate TSPL command Buffer from JSON config (includes binary QR data)
     const tsplData = generateTSPL(labelConfig);
+
+    // Step 1.5: Dump TSPL debug text file for troubleshooting
+    this._dumpTSPLDebug(tsplData, printerName);
 
     // Step 2: Send raw TSPL to printer via Windows Spooler API
     const timeoutMs = PRINT_TIMEOUT;
@@ -377,6 +380,107 @@ class PrinterService extends EventEmitter {
   }
 
   // ─── Private Methods ─────────────────────────────────────────
+
+  /**
+   * Dump TSPL command data to a debug text file for troubleshooting.
+   * Writes to tspl-debug.txt in the app directory with hex dump for binary data.
+   *
+   * @param {Buffer} tsplData - TSPL command buffer from generateTSPL()
+   * @param {string} printerName - Target printer name
+   * @private
+   */
+  _dumpTSPLDebug(tsplData, printerName) {
+    try {
+      // Split buffer into lines by CRLF
+      const lines = [];
+      let start = 0;
+      for (let i = 0; i < tsplData.length - 1; i++) {
+        if (tsplData[i] === 0x0d && tsplData[i + 1] === 0x0a) {
+          lines.push(tsplData.slice(start, i));
+          start = i + 2;
+        }
+      }
+      if (start < tsplData.length) lines.push(tsplData.slice(start));
+
+      let txt = `=== TSPL Debug Output ===\r\n`;
+      txt += `Time: ${new Date().toISOString()}\r\n`;
+      txt += `Printer: ${printerName}\r\n`;
+      txt += `Total bytes: ${tsplData.length}\r\n`;
+      txt += `Commands: ${lines.length}\r\n\r\n`;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        // Check if line contains binary data (0x1E or 0x80)
+        let hasBinary = false;
+        for (const b of line) {
+          if (b === 0x1e || b === 0x80) { hasBinary = true; break; }
+        }
+
+        if (hasBinary) {
+          const firstQuote = line.indexOf(0x22);
+          const lastQuote = line.lastIndexOf(0x22);
+
+          if (firstQuote >= 0 && lastQuote > firstQuote) {
+            const prefix = line.slice(0, firstQuote + 1).toString('utf-8');
+            const data = line.slice(firstQuote + 1, lastQuote);
+
+            txt += `--- Command ${i + 1} (binary) ---\r\n`;
+            txt += `${prefix}<binary_data>"\r\n\r\n`;
+            txt += `Binary data (${data.length} bytes):\r\n`;
+
+            // Hex dump: 16 bytes per line
+            for (let j = 0; j < data.length; j += 16) {
+              const chunk = data.slice(j, j + 16);
+              const hex = [];
+              const asc = [];
+              for (let k = 0; k < chunk.length; k++) {
+                hex.push(chunk[k].toString(16).padStart(2, '0').toUpperCase());
+                asc.push(chunk[k] >= 0x20 && chunk[k] <= 0x7e ? String.fromCharCode(chunk[k]) : '.');
+              }
+              const offset = j.toString(16).padStart(4, '0').toUpperCase();
+              txt += `  ${offset}: ${hex.join(' ').padEnd(48)}  ${asc.join('')}\r\n`;
+            }
+
+            // Decode 0x80-separated fields
+            if (data[0] === 0x80) {
+              const fields = [];
+              let current = [];
+              for (let j = 1; j < data.length; j++) {
+                if (data[j] === 0x80) {
+                  fields.push(Buffer.from(current).toString('utf-8'));
+                  current = [];
+                } else {
+                  current.push(data[j]);
+                }
+              }
+              fields.push(Buffer.from(current).toString('utf-8'));
+
+              txt += `\r\nQR fields (${fields.length}):\r\n`;
+              for (let j = 0; j < fields.length; j++) {
+                txt += `  [${j}] "${fields[j]}"\r\n`;
+              }
+            }
+          }
+        } else {
+          txt += `Line ${i + 1}: ${line.toString('utf-8')}\r\n`;
+        }
+      }
+
+      txt += `\r\n=== End ===\r\n`;
+
+      // Write debug file to app directory
+      const debugPath = path.join(__dirname, '..', '..', 'tspl-debug.txt');
+      fs.writeFileSync(debugPath, txt, 'utf-8');
+      log.info(`[PrinterService] TSPL debug file: ${debugPath}`);
+
+      // Also save raw .prn file
+      const prnPath = path.join(__dirname, '..', '..', 'tspl-debug.prn');
+      fs.writeFileSync(prnPath, tsplData);
+    } catch (err) {
+      log.warn(`[PrinterService] Failed to dump TSPL debug file: ${err.message}`);
+    }
+  }
 
   /**
    * Poll for printer changes by re-scanning installed printers.

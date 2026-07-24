@@ -19,7 +19,7 @@
  *
  * QR code binary mode (M2):
  * - Content fields separated by \t (tab)
- * - QR data body starts with 0x1E, fields joined with 0x1E byte separator
+ * - QR data body starts with 0x80, fields joined with 0x80 byte separator
  * - Chinese fields auto-encoded to UTF-8 bytes
  * - Command prefix (QRCODE x,y,...) as ASCII bytes
  * - All parts assembled as Buffer and sent to printer
@@ -189,14 +189,14 @@ function renderBarcode(el, x, y) {
  * TSPL QRCODE command: QRCODE x,y,EClevel,cellSize,mode,rotation,maxVersion,"data"
  * - EClevel: L/M/Q/H error correction
  * - cellSize: size of each QR module in dots
- * - mode: A=auto, M2=8-bit byte mode (for binary data with 0x1E separators)
+ * - mode: A=auto, M2=8-bit byte mode (for binary data with 0x80 separators)
  * - rotation: 0/90/180/270
  * - maxVersion: 0=auto, 1-40=specific QR version
  *
  * Binary mode (M2) — triggered when content contains tab (\t) separator:
  *   1. Split content by \t (tab) to get individual fields
  *   2. Convert each field to UTF-8 bytes (Chinese auto-handled)
- *   3. Prepend 0x1E as first byte, then join fields with 0x1E byte separator
+ *   3. Prepend 0x80 as first byte, then join fields with 0x80 byte separator
  *   4. Build QRCODE command as Buffer (ASCII prefix + binary data + suffix)
  *
  * Plain mode (A) — fallback for content without tab:
@@ -234,12 +234,12 @@ function renderQRCode(el, x, y) {
     // 1. Split by tab (\t) to get individual fields
     const fields = content.split('\t');
 
-    // 2. Build QR data body: leading 0x1E + fields joined with 0x1E separator
+    // 2. Build QR data body: leading 0x80 + fields joined with 0x80 separator
     //    Each field is converted to UTF-8 bytes (Chinese chars auto-handled)
     const fieldBuffers = fields.map(f => Buffer.from(f, 'utf-8'));
-    const separator = Buffer.from([0x1E]);
+    const separator = Buffer.from([0x80]);
 
-    const qrDataParts = [separator]; // first byte is 0x1E
+    const qrDataParts = [separator]; // first byte is 0x80
     for (let i = 0; i < fieldBuffers.length; i++) {
       qrDataParts.push(fieldBuffers[i]);
       if (i < fieldBuffers.length - 1) {
@@ -250,7 +250,7 @@ function renderQRCode(el, x, y) {
 
     // 3. Build complete QRCODE command as Buffer
     //    - Prefix: ASCII text "QRCODE x,y,ECLevel,size,A,0,M2,\""
-    //    - Body: binary QR data (0x1E separated fields, UTF-8 Chinese)
+    //    - Body: binary QR data (0x80 separated fields, UTF-8 Chinese)
     //    - Suffix: closing quote + CRLF
     const prefix = Buffer.from(
       `QRCODE ${x},${y},${ecLevel},${size},A,0,M2,"`,
