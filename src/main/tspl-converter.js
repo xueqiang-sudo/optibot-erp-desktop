@@ -110,13 +110,13 @@ function renderElement(el, x, y, dpm) {
     case 'barcode':
       if (el.barcodeType === 'QR') {
         // Delegate to QR code renderer (may return Buffer for binary mode)
-        const qrBuf = renderQRCode({ ...el, type: 'qrcode' }, x, y);
+        const qrBuf = renderQRCode({ ...el, type: 'qrcode' }, x, y, dpm);
         return Buffer.isBuffer(qrBuf) ? [qrBuf] : qrBuf;
       }
       return renderBarcode(el, x, y);
 
     case 'qrcode':
-      const qrResult = renderQRCode(el, x, y);
+      const qrResult = renderQRCode(el, x, y, dpm);
       return Buffer.isBuffer(qrResult) ? [qrResult] : qrResult;
 
     case 'line':
@@ -153,7 +153,8 @@ function renderText(el, x, y) {
   const fontSize = Math.max(8, el.font_size || 24);
   const fontName = el.font_name || 'SourceHa.TTF';
   const rotation = el.rotation || 0;
-  const escaped = content.replace(/"/g, '""');
+  // Replace spaces with non-breaking spaces (0xA0) to prevent TSPL printer from collapsing them
+  const escaped = content.replace(/"/g, '""').replace(/ /g, ' ');
 
   return [`TEXT ${x},${y},"${fontName}",${rotation},${fontSize},${fontSize},"${escaped}"`];
 }
@@ -184,6 +185,36 @@ function renderBarcode(el, x, y) {
 }
 
 /**
+ * Calculate max data bytes for a QR version in M2 (8-bit byte) mode, EC Level L.
+ *
+ * Based on QR code ISO/IEC 18004 structure:
+ * - Total modules = (4V+17)^2
+ * - Function pattern modules = 225 (V<=6) or 353 (V>=7)
+ * - Alignment patterns = ceil((V-7)/7 + 2)^2 - 3, each 25 modules
+ * - Timing modules = 2 * (4V+17 - 16)
+ * - Format info = 31 modules
+ * - Version info = 36 modules (V >= 7 only)
+ *
+ * @param {number} version - QR version (1-40)
+ * @returns {number} Max data bytes
+ */
+function calcMaxDataBytes(version) {
+  const s = 4 * version + 17;
+  const total = s * s;
+  const func = version <= 6 ? 225 : 353;
+  const nAlign = Math.max(0, Math.ceil((version - 7) / 7 + 2));
+  const aligns = (nAlign * nAlign - 3) * 25;
+  const timing = 2 * (s - 16);
+  const fmt = 31;
+  const ver = version >= 7 ? 36 : 0;
+  const dataModules = total - func - aligns - timing - fmt - ver;
+  const totalCodewords = Math.floor(dataModules / 8);
+  // EC Level L: 2 blocks for all versions (1-40)
+  const ecPerBlock = Math.floor(Math.ceil(totalCodewords * 0.07) / 2);
+  return totalCodewords - 2 * ecPerBlock;
+}
+
+/**
  * Render a QR code element.
  *
  * TSPL QRCODE command: QRCODE x,y,EClevel,cellSize,mode,rotation,maxVersion,"data"
@@ -209,13 +240,13 @@ function renderBarcode(el, x, y) {
  * @param {number} y - Y in dots
  * @returns {string[]|Buffer} String array for plain mode, Buffer for binary mode
  */
-function renderQRCode(el, x, y) {
+function renderQRCode(el, x, y, dpm) {
   let content = el.content || '';
   if (!content) return [];
 
-  const size = el.size || 6;
+  let cellSize = el.size || null; // null = auto-calculate
   const ecLevel = el.ecLevel || 'L';
-  const maxVersion = el.maxVersion || 0; // 0 = auto
+  const targetMM = el.qrSize || null; // target QR size in mm (null = no auto-calc)
 
   // GS1 mode: prepend ">8" Application Identifier prefix
   if (el.gs1) {
@@ -248,12 +279,43 @@ function renderQRCode(el, x, y) {
     }
     const qrData = Buffer.concat(qrDataParts);
 
-    // 3. Build complete QRCODE command as Buffer
-    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,size,A,0,M2,\""
+    // 3. Auto-calculate cellSize if target QR size (qrSize in mm) is specified
+    if (targetMM && dpm) {
+      const dataBytes = qrData.length;
+
+      // Find minimum QR version that can hold the data (M2 mode, L level)
+      let version = 1;
+      for (let v = 1; v <= 40; v++) {
+        if (calcMaxDataBytes(v) >= dataBytes) {
+          version = v;
+          break;
+        }
+        if (v === 40) version = 40;
+      }
+
+      // QR modules = 4 * version + 17
+      const modules = 4 * version + 17;
+
+      // Calculate cellSize: target dots / modules, rounded to nearest integer
+      const targetDots = targetMM * dpm;
+      cellSize = Math.max(1, Math.min(10, Math.round(targetDots / modules)));
+
+      const actualMM = (modules * cellSize) / dpm;
+      log.info(
+        `[TSPL-Converter] QR auto-size: ${dataBytes} bytes → V${version} (${modules}×${modules}), ` +
+        `cellSize=${cellSize}, actual=${actualMM.toFixed(1)}mm (target=${targetMM}mm)`
+      );
+    }
+
+    // Fallback: default cellSize if not set
+    if (!cellSize) cellSize = 6;
+
+    // 4. Build complete QRCODE command as Buffer
+    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,cellSize,A,0,M2,\""
     //    - Body: binary QR data (0x80 separated fields, UTF-8 Chinese)
     //    - Suffix: closing quote + CRLF
     const prefix = Buffer.from(
-      `QRCODE ${x},${y},${ecLevel},${size},A,0,M2,"`,
+      `QRCODE ${x},${y},${ecLevel},${cellSize},A,0,M2,"`,
       'utf-8'
     );
     const suffix = Buffer.from('"\r\n', 'utf-8');
@@ -498,7 +560,7 @@ function renderTable(el, tx, ty, dpm) {
           offsetX = 2;
         }
 
-        const rawEsc = rawContent.replace(/"/g, '""');
+        const rawEsc = rawContent.replace(/"/g, '""').replace(/ /g, ' ');
         commands.push(
           `TEXT ${cellX + offsetX},${cellY + offsetY},"${fontName}",0,${cf},${cf},"${rawEsc}"`
         );
