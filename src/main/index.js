@@ -410,6 +410,7 @@ function registerIPCHandlers() {
       if (options) {
         store.set('lastScaleOptions', options);
       }
+      store.set('autoConnectScale', true); // Enable auto-connect on next startup
       return { success: true };
     } catch (err) {
       throw err;
@@ -424,6 +425,7 @@ function registerIPCHandlers() {
     } catch (err) {
       log.warn('scale:disconnect error:', err.message);
     }
+    store.set('autoConnectScale', false); // Disable auto-connect
     return { success: true };
   });
 
@@ -566,6 +568,7 @@ function registerIPCHandlers() {
       log.info(`[IPC] printer:print-label called for "${printerId}"`);
       const result = await printerService.printLabel(printerId, labelConfig);
       log.info(`[IPC] printer:print-label completed successfully`);
+      store.set('lastPrinterId', printerId); // Save last used printer
       return result;
     } catch (err) {
       log.error(`[IPC] printer:print-label failed:`, err.message);
@@ -575,6 +578,26 @@ function registerIPCHandlers() {
 
   ipcMain.handle('printer:get-status', () => {
     return printerService.getStatus();
+  });
+
+  // ★ Device info query — returns current scale & printer state
+  ipcMain.handle('device:get-info', () => {
+    const scaleStatus = scaleService ? scaleService.getStatus() : { connected: false, port: null };
+    const printerStatus = printerService ? printerService.getStatus() : { connected: false, printers: [] };
+
+    return {
+      scale: {
+        connected: scaleStatus.connected || false,
+        port: scaleStatus.port || null,
+        options: store.get('lastScaleOptions') || null,
+        autoConnect: store.get('autoConnectScale') || false,
+        savedPort: store.get('lastScalePort') || null,
+      },
+      printer: {
+        savedId: store.get('lastPrinterId') || null,
+        available: printerStatus.printers || [],
+      },
+    };
   });
 
   ipcMain.handle('app:get-version', () => {
@@ -695,10 +718,44 @@ function initServices() {
     setTimeout(async () => {
       try {
         await scaleService.connect(lastPort, lastScaleOptions || {});
+        log.info(`Auto-connected scale on ${lastPort}`);
       } catch (err) {
-        log.warn('Auto-connect scale failed:', err.message);
+        log.warn(`Auto-connect scale failed on ${lastPort}: ${err.message}`);
+        // Port may not exist anymore (unplugged/changed) — clear saved config
+        store.set('autoConnectScale', false);
+        store.set('lastScalePort', null);
+        store.set('lastScaleOptions', null);
+        // Notify renderer that auto-connect failed
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('scale:auto-connect-failed', {
+            port: lastPort,
+            error: err.message,
+          });
+        }
       }
     }, 3000);
+  }
+
+  // Check if saved printer still exists (after initial scan)
+  const savedPrinterId = store.get('lastPrinterId');
+  if (savedPrinterId) {
+    setTimeout(async () => {
+      try {
+        const printers = await printerService.listPrinters();
+        const found = printers.some((p) => p.id === savedPrinterId || p.name === savedPrinterId);
+        if (!found) {
+          log.warn(`Saved printer "${savedPrinterId}" no longer available, clearing config`);
+          store.set('lastPrinterId', null);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('printer:saved-not-found', {
+              printerId: savedPrinterId,
+            });
+          }
+        }
+      } catch (err) {
+        log.warn('Failed to verify saved printer:', err.message);
+      }
+    }, 5000);
   }
 
   // Tray manager

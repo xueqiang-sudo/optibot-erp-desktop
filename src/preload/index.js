@@ -249,6 +249,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
+   * Device Info API — query current scale & printer state
+   *
+   * Usage:
+   *   const info = await window.electronAPI.device.getInfo();
+   *   console.log(info.scale.connected); // true/false
+   *   console.log(info.scale.port);      // "COM3" or null
+   *   console.log(info.printer.savedId); // "TSC TTP-244 Pro" or null
+   */
+  device: {
+    /**
+     * Get current device state (scale + printer)
+     * @returns {Promise<{
+     *   scale: { connected: boolean, port: string|null, options: Object|null, autoConnect: boolean, savedPort: string|null },
+     *   printer: { savedId: string|null, available: Array }
+     * }>}
+     */
+    getInfo: () => ipcRenderer.invoke('device:get-info'),
+  },
+
+  /**
    * Application API
    */
   app: {
