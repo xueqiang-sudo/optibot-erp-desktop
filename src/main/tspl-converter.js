@@ -1,27 +1,34 @@
 /**
- * TSPL Converter — Pure JavaScript JSON-to-TSPL command string generator
+ * TSPL Converter — Pure JavaScript JSON-to-TSPL command generator
  *
- * Replaces TSCLIB.dll (koffi FFI) with pure JS string generation.
- * The output is a complete TSPL program that can be sent directly to a
- * TSC label printer via the Windows Spooler API in RAW mode.
+ * Replaces TSCLIB.dll (koffi FFI) with pure JS generation.
+ * The output is a complete TSPL program as a Buffer that can be sent
+ * directly to a TSC label printer via the Windows Spooler API in RAW mode.
  *
  * TSPL reference: TSC Auto ID Programming Manual
  *
  * Coordinate system:
  * - Input JSON uses millimeters for all positions/sizes
  * - Output TSPL uses dots (printer resolution units)
- * - Conversion: dots = mm × (dpi / 25.4)
+ * - Conversion: dots = mm \u00d7 (dpi / 25.4)
  *
  * Font handling:
  * - Chinese text uses printer-stored fonts (e.g., "SourceHa.TTF", "SimsunEx")
  * - Font name is referenced directly in TEXT commands
  * - No separate font download/mapping step needed
+ *
+ * QR code binary mode (M2):
+ * - Content fields separated by \t (tab)
+ * - QR data body starts with 0x1E, fields joined with 0x1E byte separator
+ * - Chinese fields auto-encoded to UTF-8 bytes
+ * - Command prefix (QRCODE x,y,...) as ASCII bytes
+ * - All parts assembled as Buffer and sent to printer
  */
 
 const log = require('electron-log');
 
 /**
- * Generate a complete TSPL command string from a label configuration object.
+ * Generate a complete TSPL command Buffer from a label configuration object.
  *
  * @param {Object} config - Label configuration (same format as TSCLIB wrapper input)
  * @param {number} config.width - Label width in mm
@@ -29,29 +36,28 @@ const log = require('electron-log');
  * @param {number} [config.dpi=203] - Printer DPI (dots per inch)
  * @param {number} [config.copies=1] - Number of copies to print
  * @param {Array} config.elements - Array of label elements
- * @returns {string} Complete TSPL command string (newline-separated)
+ * @returns {Buffer} Complete TSPL command data as Buffer (supports binary QR)
  */
 function generateTSPL(config) {
   const { width, height, dpi = 203, copies = 1, elements } = config;
   const dpm = dpi / 25.4; // dots per millimeter
 
-  const commands = [];
+  const buffers = []; // Array of Buffers (supports binary QR data with 0x80)
 
-  // ── Label setup ──
-  // SIZE: label dimensions in mm
-  commands.push(`SIZE ${width} mm, ${height} mm`);
-  // GAP: 4mm gap, 8mm offset (standard for TSC label printers)
-  commands.push('GAP 4 mm,8');
-  // DIRECTION: 1 = reverse printing direction
-  commands.push('DIRECTION 1');
-  // REFERENCE: origin at 0,0
-  commands.push('REFERENCE 0,0');
-  // CODEPAGE: UTF-8 encoding for Chinese text support
-  commands.push('CODEPAGE UTF-8');
-  // CLS: clear the image buffer
-  commands.push('CLS');
+  // \u2500\u2500 Label setup \u2500\u2500
+  const setupLines = [
+    `SIZE ${width} mm, ${height} mm`,
+    'GAP 4 mm,8',
+    'DIRECTION 1',
+    'REFERENCE 0,0',
+    'CODEPAGE UTF-8',
+    'CLS',
+  ];
+  for (const line of setupLines) {
+    buffers.push(Buffer.from(line + '\r\n', 'utf-8'));
+  }
 
-  // ── Render each element ──
+  // \u2500\u2500 Render each element \u2500\u2500
   if (elements && Array.isArray(elements)) {
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i];
@@ -60,35 +66,40 @@ function generateTSPL(config) {
 
       try {
         const elCommands = renderElement(el, x, y, dpm);
-        commands.push(...elCommands);
+        for (const cmd of elCommands) {
+          if (Buffer.isBuffer(cmd)) {
+            buffers.push(cmd);
+          } else {
+            buffers.push(Buffer.from(cmd + '\r\n', 'utf-8'));
+          }
+        }
       } catch (err) {
         log.error(`[TSPL-Converter] Element ${i} (${el.type}): ${err.message}`);
       }
     }
   }
 
-  // ── Print ──
-  // PRINT: print 1 label set, N copies
-  commands.push(`PRINT 1,${copies}`);
+  // \u2500\u2500 Print \u2500\u2500
+  buffers.push(Buffer.from(`PRINT 1,${copies}\r\n`, 'utf-8'));
 
-  const tsplString = commands.join('\r\n') + '\r\n';
+  const result = Buffer.concat(buffers);
 
   log.info(
-    `[TSPL-Converter] Generated ${commands.length} commands, ${tsplString.length} chars`
+    `[TSPL-Converter] Generated ${buffers.length} command buffers, ${result.length} bytes`
   );
-  log.debug(`[TSPL-Converter] Output preview:\n${commands.slice(0, 10).join('\r\n')}`);
 
-  return tsplString;
+  return result;
 }
 
 /**
- * Render a single label element to an array of TSPL command strings.
+ * Render a single label element to an array of TSPL commands.
+ * Returns string[] for most elements, but may contain Buffer for binary QR codes.
  *
  * @param {Object} el - Element descriptor
  * @param {number} x - X position in dots
  * @param {number} y - Y position in dots
  * @param {number} dpm - Dots per millimeter
- * @returns {string[]} Array of TSPL command strings
+ * @returns {Array<string|Buffer>} Array of TSPL commands (string or Buffer for binary QR)
  */
 function renderElement(el, x, y, dpm) {
   switch (el.type) {
@@ -98,13 +109,15 @@ function renderElement(el, x, y, dpm) {
 
     case 'barcode':
       if (el.barcodeType === 'QR') {
-        // Delegate to QR code renderer
-        return renderQRCode({ ...el, type: 'qrcode' }, x, y);
+        // Delegate to QR code renderer (may return Buffer for binary mode)
+        const qrBuf = renderQRCode({ ...el, type: 'qrcode' }, x, y);
+        return Buffer.isBuffer(qrBuf) ? [qrBuf] : qrBuf;
       }
       return renderBarcode(el, x, y);
 
     case 'qrcode':
-      return renderQRCode(el, x, y);
+      const qrResult = renderQRCode(el, x, y);
+      return Buffer.isBuffer(qrResult) ? [qrResult] : qrResult;
 
     case 'line':
       return renderLine(el, x, y, dpm);
@@ -173,31 +186,93 @@ function renderBarcode(el, x, y) {
 /**
  * Render a QR code element.
  *
- * TSPL QRCODE command: QRCODE x,y,EClevel,cellSize,mode,rotation,"content"
+ * TSPL QRCODE command: QRCODE x,y,EClevel,cellSize,mode,rotation,maxVersion,"data"
  * - EClevel: L/M/Q/H error correction
  * - cellSize: size of each QR module in dots
- * - mode: M2=8-bit byte mode (handles control chars and UTF-8)
+ * - mode: A=auto, M2=8-bit byte mode (for binary data with 0x1E separators)
  * - rotation: 0/90/180/270
+ * - maxVersion: 0=auto, 1-40=specific QR version
+ *
+ * Binary mode (M2) — triggered when content contains tab (\t) separator:
+ *   1. Split content by \t (tab) to get individual fields
+ *   2. Convert each field to UTF-8 bytes (Chinese auto-handled)
+ *   3. Prepend 0x1E as first byte, then join fields with 0x1E byte separator
+ *   4. Build QRCODE command as Buffer (ASCII prefix + binary data + suffix)
+ *
+ * Plain mode (A) — fallback for content without tab:
+ *   Standard text-based QRCODE command string.
  *
  * GS1 mode: prepend ">8" to content (GS1 Application Identifier prefix)
  *
  * @param {Object} el - QR code element
  * @param {number} x - X in dots
  * @param {number} y - Y in dots
- * @returns {string[]}
+ * @returns {string[]|Buffer} String array for plain mode, Buffer for binary mode
  */
 function renderQRCode(el, x, y) {
   let content = el.content || '';
   if (!content) return [];
 
+  const size = el.size || 6;
+  const ecLevel = el.ecLevel || 'L';
+  const maxVersion = el.maxVersion || 0; // 0 = auto
+
+  // GS1 mode: prepend ">8" Application Identifier prefix
   if (el.gs1) {
     content = '>8' + content;
   }
-  content = content.replace(/"/g, '""');
 
-  const size = el.size || 6;
+  // Check if content has field separators (\t)
+  if (content.includes('\t')) {
+    // ── Binary mode (M2): build QR data as raw bytes ──
 
-  return [`QRCODE ${x},${y},L,${size},M2,0,"${content}"`];
+    // Remove leading \t if present (content starts with \t)
+    if (content.startsWith('\t')) {
+      content = content.substring(1);
+    }
+
+    // 1. Split by tab (\t) to get individual fields
+    const fields = content.split('\t');
+
+    // 2. Build QR data body: leading 0x1E + fields joined with 0x1E separator
+    //    Each field is converted to UTF-8 bytes (Chinese chars auto-handled)
+    const fieldBuffers = fields.map(f => Buffer.from(f, 'utf-8'));
+    const separator = Buffer.from([0x1E]);
+
+    const qrDataParts = [separator]; // first byte is 0x1E
+    for (let i = 0; i < fieldBuffers.length; i++) {
+      qrDataParts.push(fieldBuffers[i]);
+      if (i < fieldBuffers.length - 1) {
+        qrDataParts.push(separator);
+      }
+    }
+    const qrData = Buffer.concat(qrDataParts);
+
+    // 3. Build complete QRCODE command as Buffer
+    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,size,M2,rotation,maxVersion,\""
+    //    - Body: binary QR data (0x1E separated fields, UTF-8 Chinese)
+    //    - Suffix: closing quote + CRLF
+    const prefix = Buffer.from(
+      `QRCODE ${x},${y},${ecLevel},${size},M2,0,${maxVersion},"`,
+      'utf-8'
+    );
+    const suffix = Buffer.from('"\r\n', 'utf-8');
+
+    const cmd = Buffer.concat([prefix, qrData, suffix]);
+
+    log.debug(
+      `[TSPL-Converter] QR binary: ${fields.length} fields, ${qrData.length} bytes`
+    );
+    log.debug(
+      `[TSPL-Converter] QR hex: ${cmd.toString('hex').match(/../g).join(' ')}`
+    );
+
+    return cmd;
+  }
+
+  // ── Plain mode: standard text-based QRCODE command ──
+  const escaped = content.replace(/"/g, '""');
+  return [`QRCODE ${x},${y},${ecLevel},${size},A,0,"${escaped}"`];
 }
 
 /**
@@ -218,7 +293,6 @@ function renderLine(el, x, y, dpm) {
 
   return [`BAR ${x},${y},${width},${thickness}`];
 }
-
 /**
  * Render a table element — the most complex element type.
  *

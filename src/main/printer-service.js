@@ -322,7 +322,7 @@ class PrinterService extends EventEmitter {
    * 3. Clean up temp file after execution
    *
    * @param {string} printerId - Windows printer name
-   * @param {string} data - TSPL command string
+   * @param {string|Buffer} data - TSPL command data (Buffer from generateTSPL, supports binary QR)
    * @returns {Promise<void>}
    */
   async sendRaw(printerId, data) {
@@ -330,9 +330,9 @@ class PrinterService extends EventEmitter {
       throw new Error('Printer name is required');
     }
 
-    // Convert TSPL string to UTF-8 encoding
-    // The TSPL output includes CODEPAGE UTF-8, so we send UTF-8 bytes to match.
-    const buffer = Buffer.from(data, 'utf-8');
+    // generateTSPL returns Buffer (supports binary QR data with 0x80 bytes).
+    // If data is already a Buffer, use directly; otherwise convert string to UTF-8.
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf-8');
     const base64Data = buffer.toString('base64');
 
     log.info(
