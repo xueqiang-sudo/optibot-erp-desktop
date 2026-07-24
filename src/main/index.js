@@ -218,6 +218,42 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
   let loadAttempts = 0;
   const MAX_LOAD_ATTEMPTS = 3;
 
+  // ★ Error page HTML — shown when server is unreachable
+  function buildErrorPage(errorMsg) {
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>OptiBot ERP</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{display:flex;justify-content:center;align-items:center;height:100vh;
+  background:#f0f2f5;font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+.card{background:#fff;border-radius:12px;padding:48px;text-align:center;
+  box-shadow:0 4px 24px rgba(0,0,0,0.1);max-width:420px}
+.icon{font-size:64px;margin-bottom:20px}
+.title{font-size:20px;color:#333;font-weight:bold;margin-bottom:12px}
+.msg{font-size:14px;color:#666;line-height:1.6;margin-bottom:8px}
+.url{font-size:12px;color:#999;word-break:break-all;margin-bottom:24px}
+.btn{padding:10px 40px;font-size:15px;border-radius:6px;cursor:pointer;
+  border:none;font-family:inherit;transition:background .2s}
+.btn-retry{background:#1677ff;color:#fff}
+.btn-retry:hover{background:#4096ff}
+.btn-retry:active{background:#0958d9}
+</style></head>
+<body>
+<div class="card">
+  <div class="icon">⚠️</div>
+  <div class="title">网络连接失败</div>
+  <div class="msg">无法连接到 ERP 服务器，请检查网络</div>
+  <div class="url">${FRAPPE_URL}<br>${errorMsg || ''}</div>
+  <button class="btn btn-retry" onclick="doRefresh()">刷新重试</button>
+</div>
+<script>
+const{ipcRenderer}=require('electron');
+function doRefresh(){ipcRenderer.send('app:refresh-page')}
+</script>
+</body></html>`;
+    return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  }
+
   function loadFrappeUrl() {
     loadAttempts++;
     log.info(`Loading URL (attempt ${loadAttempts}): ${FRAPPE_URL}`);
@@ -230,22 +266,9 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
         log.info(`Retrying in 2 seconds...`);
         setTimeout(loadFrappeUrl, 2000);
       } else {
-        dialog.showMessageBox(mainWindow, {
-          type: 'error',
-          title: '页面加载失败',
-          message: '无法加载 ERP 页面',
-          detail: `URL: ${FRAPPE_URL}\n错误: ${err.message}\n\n请检查：\n1. 网络连接是否正常\n2. 服务器 ${FRAPPE_URL} 是否可访问\n3. 防火墙是否阻止了连接\n\n点击"重试"重新加载，点击"退出"关闭程序。`,
-          buttons: ['重试', '退出'],
-          defaultId: 0,
-        }).then((r) => {
-          if (r.response === 0) {
-            loadAttempts = 0;
-            loadFrappeUrl();
-          } else {
-            global.isQuitting = true;
-            app.quit();
-          }
-        });
+        // Show error page instead of native dialog — app stays alive
+        log.warn('All load attempts failed, showing error page');
+        mainWindow.loadURL(buildErrorPage(err.message));
       }
     });
   }
@@ -264,26 +287,9 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
       return;
     }
 
-    dialog.showMessageBox(mainWindow, {
-      type: 'error',
-      title: '页面加载失败',
-      message: `错误代码: ${errorCode}`,
-      detail: `描述: ${errorDescription}\nURL: ${validatedURL || FRAPPE_URL}\n\n点击"重试"重新加载。`,
-      buttons: ['重试', '打开调试工具', '退出'],
-      defaultId: 0,
-    }).then((r) => {
-      if (r.response === 0) {
-        loadAttempts = 0;
-        loadFrappeUrl();
-      } else if (r.response === 1) {
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
-        loadAttempts = 0;
-        loadFrappeUrl();
-      } else {
-        global.isQuitting = true;
-        app.quit();
-      }
-    });
+    // Show error page instead of native dialog — app stays alive
+    log.warn('All load attempts failed, showing error page');
+    mainWindow.loadURL(buildErrorPage(`${errorCode}: ${errorDescription}`));
   });
 
   // Inject bridge script after page loads
@@ -587,6 +593,41 @@ function registerIPCHandlers() {
   ipcMain.handle('app:set-config', (_event, key, value) => {
     store.set(key, value);
     return { success: true };
+  });
+
+  // ★ Refresh page — triggered by error page's "刷新重试" button
+  ipcMain.on('app:refresh-page', () => {
+    log.info('[IPC] app:refresh-page — reloading ERP URL');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // Show loading page briefly, then load ERP URL
+      const loadingHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8"><title>OptiBot ERP</title>
+        <style>
+          body{margin:0;display:flex;justify-content:center;align-items:center;height:100vh;
+            background:#f0f2f5;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}
+          .wrap{text-align:center}
+          .spinner{width:48px;height:48px;border:4px solid #e0e0e0;border-top:4px solid #1677ff;
+            border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px}
+          @keyframes spin{to{transform:rotate(360deg)}}
+          .title{font-size:22px;color:#333;font-weight:bold;margin-bottom:8px}
+          .sub{font-size:14px;color:#999}
+        </style></head>
+        <body><div class="wrap">
+          <div class="spinner"></div>
+          <div class="title">OptiBot ERP</div>
+          <div class="sub">正在重新连接服务器...</div>
+        </div></body></html>
+      `)}`;
+      mainWindow.loadURL(loadingHtml);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(FRAPPE_URL).catch((err) => {
+            log.error('Refresh load failed:', err.message);
+          });
+        }
+      }, 500);
+    }
   });
 
   // ★ Quit dialog response handler
