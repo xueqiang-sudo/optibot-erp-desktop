@@ -249,11 +249,11 @@ function renderQRCode(el, x, y) {
     const qrData = Buffer.concat(qrDataParts);
 
     // 3. Build complete QRCODE command as Buffer
-    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,size,M2,rotation,maxVersion,\""
+    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,size,A,0,M2,\""
     //    - Body: binary QR data (0x1E separated fields, UTF-8 Chinese)
     //    - Suffix: closing quote + CRLF
     const prefix = Buffer.from(
-      `QRCODE ${x},${y},${ecLevel},${size},M2,0,${maxVersion},"`,
+      `QRCODE ${x},${y},${ecLevel},${size},A,0,M2,"`,
       'utf-8'
     );
     const suffix = Buffer.from('"\r\n', 'utf-8');

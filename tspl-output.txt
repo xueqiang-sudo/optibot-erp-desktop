@@ -1,0 +1,39 @@
+=== TSPL Command Output ===
+Generated: 2026-07-24T03:02:52.409Z
+Total bytes: 240
+Commands: 8
+
+Line 1: SIZE 97.5 mm, 80.3 mm
+Line 2: GAP 4 mm,8
+Line 3: DIRECTION 1
+Line 4: REFERENCE 0,0
+Line 5: CODEPAGE UTF-8
+Line 6: CLS
+--- Command 7 ---
+QRCODE 440,48,L,4,A,0,M2,"<binary_data>"
+
+Binary data (116 bytes):
+  0000: 1E 32 36 30 37 32 34 30 31 30 30 31 1E 31 1E 2D   .26072401001.1.-
+  0010: 30 31 36 35 30 1E 37 35 44 2F 32 2D 52 53 32 36   01650.75D/2-RS26
+  0020: 2D 33 2D 54 5A 36 30 33 E7 B1 B3 E7 99 BD 2D 41   -3-TZ603......-A
+  0030: 41 2D E5 B0 8F E5 8C 85 E8 A3 85 1E 52 53 32 36   A-..........RS26
+  0040: 2D 33 1E 30 30 30 31 1E 42 54 53 20 E9 AB 98 E5   -3.0001.BTS ....
+  0050: BC B9 E5 90 88 E8 82 A1 E8 BD BB E7 BD 91 1E 1E   ................
+  0060: 37 35 44 2F 32 1E 54 5A 36 30 33 E7 B1 B3 E7 99   75D/2.TZ603.....
+  0070: BD 1E 41 41                                       ..AA
+
+QR fields (11):
+  [0] "26072401001"
+  [1] "1"
+  [2] "-01650"
+  [3] "75D/2-RS26-3-TZ603米白-AA-小包装"
+  [4] "RS26-3"
+  [5] "0001"
+  [6] "BTS 高弹合股轻网"
+  [7] ""
+  [8] "75D/2"
+  [9] "TZ603米白"
+  [10] "AA"
+Line 8: PRINT 1,1
+
+=== End ===
