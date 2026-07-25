@@ -253,70 +253,33 @@ function renderQRCode(el, x, y, dpm) {
 
   // Check if content has field separators (\t)
   if (content.includes('\t')) {
-    // ── Binary mode (M2): build QR data as raw bytes ──
+    // ── M2 mode: UTF-8 text with tab (\t) field separators ──
+    // QR data is the raw UTF-8 bytes of content with \t (0x09) between fields.
+    // No 0x80 byte insertion — standard UTF-8 ensures iPhone can decode Chinese.
 
     // Remove leading \t if present (content starts with \t)
     if (content.startsWith('\t')) {
       content = content.substring(1);
     }
 
-    // 1. Split by tab (\t) to get individual fields
     const fields = content.split('\t');
+    const qrData = Buffer.from(content, 'utf-8');
 
-    // 2. Build QR data body: leading 0x80 + fields joined with 0x80 separator
-    //    Each field is converted to UTF-8 bytes (Chinese chars auto-handled)
-    const fieldBuffers = fields.map(f => Buffer.from(f, 'utf-8'));
-    const separator = Buffer.from([0x80]);
-
-    const qrDataParts = [separator]; // first byte is 0x80
-    for (let i = 0; i < fieldBuffers.length; i++) {
-      qrDataParts.push(fieldBuffers[i]);
-      if (i < fieldBuffers.length - 1) {
-        qrDataParts.push(separator);
-      }
-    }
-    const qrData = Buffer.concat(qrDataParts);
-
-    // Force QR version ≥ V7 for iPhone camera compatibility.
-    // V5 (37×37 modules) has proven unreliable on iOS native QR decoder;
-    // V7+ (45×45+) works reliably. If data fits in V6, pad with spaces (0x20)
-    // appended to the last field to exceed V6 capacity → printer selects V7.
-    const MIN_QR_VERSION = 7;
-    // V6 M2/L capacity = 106 bytes (ISO 18004). Data ≤106 → printer picks V5 or V6.
-    // Padding to 107 forces printer to select V7 (45×45 modules), which is
-    // reliably scannable by iPhone.
-    const v6Capacity = 106;
-    let finalQrData = qrData;
-    if (qrData.length <= v6Capacity) {
-      const padCount = v6Capacity + 1 - qrData.length;
-      const padding = Buffer.alloc(padCount, 0x20); // spaces (safe, trim-able)
-      finalQrData = Buffer.concat([qrData, padding]);
-      log.info(
-        `[TSPL-Converter] QR padded: ${qrData.length} → ${finalQrData.length} bytes ` +
-        `(force V${MIN_QR_VERSION}, V${MIN_QR_VERSION - 1} capacity=${v6Capacity})`
-      );
-    }
-
-    // 4. Build complete QRCODE command as Buffer
-    //    - Prefix: ASCII text "QRCODE x,y,ECLevel,cellSize,A,0,M2,\""
-    //    - Body: binary QR data (0x80 separated fields, UTF-8 Chinese)
-    //    - Suffix: closing quote + CRLF
+    // Build QRCODE command as Buffer (M2 mode required for UTF-8 + Chinese)
     const prefix = Buffer.from(
       `QRCODE ${x},${y},${ecLevel},${cellSize},A,0,M2,"`,
       'utf-8'
     );
     const suffix = Buffer.from('"\r\n', 'utf-8');
 
-    const cmd = Buffer.concat([prefix, finalQrData, suffix]);
+    const cmd = Buffer.concat([prefix, qrData, suffix]);
 
-    log.debug(
-      `[TSPL-Converter] QR binary: ${fields.length} fields, ${finalQrData.length} bytes`
-    );
-    log.debug(
-      `[TSPL-Converter] QR hex: ${cmd.toString('hex').match(/../g).join(' ')}`
+    log.info(
+      `[TSPL-Converter] QR M2/UTF-8: ${fields.length} fields, ${qrData.length} bytes`
     );
 
     return cmd;
+
   }
 
   // ── Plain mode: standard text-based QRCODE command ──
