@@ -277,6 +277,26 @@ function renderQRCode(el, x, y, dpm) {
     }
     const qrData = Buffer.concat(qrDataParts);
 
+    // Force QR version ≥ V7 for iPhone camera compatibility.
+    // V5 (37×37 modules) has proven unreliable on iOS native QR decoder;
+    // V7+ (45×45+) works reliably. If data fits in V6, pad with spaces (0x20)
+    // appended to the last field to exceed V6 capacity → printer selects V7.
+    const MIN_QR_VERSION = 7;
+    // V6 M2/L capacity = 106 bytes (ISO 18004). Data ≤106 → printer picks V5 or V6.
+    // Padding to 107 forces printer to select V7 (45×45 modules), which is
+    // reliably scannable by iPhone.
+    const v6Capacity = 106;
+    let finalQrData = qrData;
+    if (qrData.length <= v6Capacity) {
+      const padCount = v6Capacity + 1 - qrData.length;
+      const padding = Buffer.alloc(padCount, 0x20); // spaces (safe, trim-able)
+      finalQrData = Buffer.concat([qrData, padding]);
+      log.info(
+        `[TSPL-Converter] QR padded: ${qrData.length} → ${finalQrData.length} bytes ` +
+        `(force V${MIN_QR_VERSION}, V${MIN_QR_VERSION - 1} capacity=${v6Capacity})`
+      );
+    }
+
     // 4. Build complete QRCODE command as Buffer
     //    - Prefix: ASCII text "QRCODE x,y,ECLevel,cellSize,A,0,M2,\""
     //    - Body: binary QR data (0x80 separated fields, UTF-8 Chinese)
@@ -287,10 +307,10 @@ function renderQRCode(el, x, y, dpm) {
     );
     const suffix = Buffer.from('"\r\n', 'utf-8');
 
-    const cmd = Buffer.concat([prefix, qrData, suffix]);
+    const cmd = Buffer.concat([prefix, finalQrData, suffix]);
 
     log.debug(
-      `[TSPL-Converter] QR binary: ${fields.length} fields, ${qrData.length} bytes`
+      `[TSPL-Converter] QR binary: ${fields.length} fields, ${finalQrData.length} bytes`
     );
     log.debug(
       `[TSPL-Converter] QR hex: ${cmd.toString('hex').match(/../g).join(' ')}`
