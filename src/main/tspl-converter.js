@@ -51,6 +51,7 @@ function generateTSPL(config) {
     'DIRECTION 1',
     'REFERENCE 0,0',
     'CODEPAGE UTF-8',
+    'DENSITY 10',
     'CLS',
   ];
   for (const line of setupLines) {
