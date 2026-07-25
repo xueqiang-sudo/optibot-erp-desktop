@@ -153,7 +153,6 @@ function renderText(el, x, y) {
   const fontSize = Math.max(8, el.font_size || 24);
   const fontName = el.font_name || 'SourceHa.TTF';
   const rotation = el.rotation || 0;
-  // Preserve spaces as-is — the printer handles them correctly
   const escaped = content.replace(/"/g, '""');
 
   return [`TEXT ${x},${y},"${fontName}",${rotation},${fontSize},${fontSize},"${escaped}"`];
@@ -244,9 +243,8 @@ function renderQRCode(el, x, y, dpm) {
   let content = el.content || '';
   if (!content) return [];
 
-  let cellSize = el.size || null; // null = auto-calculate
+  const cellSize = el.size || 4;
   const ecLevel = el.ecLevel || 'L';
-  const targetMM = el.qrSize || null; // target QR size in mm (null = no auto-calc)
 
   // GS1 mode: prepend ">8" Application Identifier prefix
   if (el.gs1) {
@@ -279,37 +277,6 @@ function renderQRCode(el, x, y, dpm) {
     }
     const qrData = Buffer.concat(qrDataParts);
 
-    // 3. Auto-calculate cellSize if target QR size (qrSize in mm) is specified
-    if (targetMM && dpm) {
-      const dataBytes = qrData.length;
-
-      // Find minimum QR version that can hold the data (M2 mode, L level)
-      let version = 1;
-      for (let v = 1; v <= 40; v++) {
-        if (calcMaxDataBytes(v) >= dataBytes) {
-          version = v;
-          break;
-        }
-        if (v === 40) version = 40;
-      }
-
-      // QR modules = 4 * version + 17
-      const modules = 4 * version + 17;
-
-      // Calculate cellSize: target dots / modules, rounded to nearest integer
-      const targetDots = targetMM * dpm;
-      cellSize = Math.max(1, Math.min(10, Math.round(targetDots / modules)));
-
-      const actualMM = (modules * cellSize) / dpm;
-      log.info(
-        `[TSPL-Converter] QR auto-size: ${dataBytes} bytes → V${version} (${modules}×${modules}), ` +
-        `cellSize=${cellSize}, actual=${actualMM.toFixed(1)}mm (target=${targetMM}mm)`
-      );
-    }
-
-    // Fallback: default cellSize if not set
-    if (!cellSize) cellSize = 6;
-
     // 4. Build complete QRCODE command as Buffer
     //    - Prefix: ASCII text "QRCODE x,y,ECLevel,cellSize,A,0,M2,\""
     //    - Body: binary QR data (0x80 separated fields, UTF-8 Chinese)
@@ -334,7 +301,7 @@ function renderQRCode(el, x, y, dpm) {
 
   // ── Plain mode: standard text-based QRCODE command ──
   const escaped = content.replace(/"/g, '""');
-  return [`QRCODE ${x},${y},${ecLevel},${size},A,0,"${escaped}"`];
+  return [`QRCODE ${x},${y},${ecLevel},${cellSize},A,0,"${escaped}"`];
 }
 
 /**
@@ -546,21 +513,18 @@ function renderTable(el, tx, ty, dpm) {
         // Vertical offset: center text within row height
         const offsetY = Math.max(1, Math.round((rowHeight - cf) / 2) - Math.round(cf * 0.25));
 
-        // Horizontal offset based on alignment
+        // Horizontal offset based on alignment (textW includes space widths)
         let offsetX;
         if (textW >= cellW) {
-          // Text still wider than cell after shrinking: left-align
           offsetX = 2;
         } else if (alignment === 'center') {
           offsetX = Math.max(2, Math.round((cellW - textW) / 2));
         } else if (alignment === 'right') {
           offsetX = Math.max(2, cellW - textW - 4);
         } else {
-          // Left-aligned (default)
           offsetX = 2;
         }
 
-        // Preserve spaces as-is — the printer handles them correctly
         const rawEsc = rawContent.replace(/"/g, '""');
         commands.push(
           `TEXT ${cellX + offsetX},${cellY + offsetY},"${fontName}",0,${cf},${cf},"${rawEsc}"`
