@@ -153,8 +153,8 @@ function renderText(el, x, y) {
   const fontSize = Math.max(8, el.font_size || 24);
   const fontName = el.font_name || 'SourceHa.TTF';
   const rotation = el.rotation || 0;
-  // Replace spaces with non-breaking spaces (0xA0) to prevent TSPL printer from collapsing them
-  const escaped = content.replace(/"/g, '""').replace(/ /g, ' ');
+  // Preserve spaces as-is — the printer handles them correctly
+  const escaped = content.replace(/"/g, '""');
 
   return [`TEXT ${x},${y},"${fontName}",${rotation},${fontSize},${fontSize},"${escaped}"`];
 }
@@ -560,7 +560,8 @@ function renderTable(el, tx, ty, dpm) {
           offsetX = 2;
         }
 
-        const rawEsc = rawContent.replace(/"/g, '""').replace(/ /g, ' ');
+        // Preserve spaces as-is — the printer handles them correctly
+        const rawEsc = rawContent.replace(/"/g, '""');
         commands.push(
           `TEXT ${cellX + offsetX},${cellY + offsetY},"${fontName}",0,${cf},${cf},"${rawEsc}"`
         );
