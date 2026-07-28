@@ -35,8 +35,7 @@ const { generateTSPL } = require('./tspl-converter');
 const POWERSHELL = 'powershell.exe';
 const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass'];
 
-// Polling interval for printer change detection (ms)
-const POLL_INTERVAL = 5000;
+// Polling disabled — printers are scanned on demand when user opens print settings
 
 // Timeout for PowerShell commands (ms)
 const LIST_TIMEOUT = 10000;
@@ -174,26 +173,16 @@ class PrinterService extends EventEmitter {
     super();
 
     this.knownPrinters = new Map(); // printerName → { name, driverName, portName, ... }
-    this.pollTimer = null;
-    this.polling = false;
-
-    // Bind methods
-    this._pollPrinters = this._pollPrinters.bind(this);
   }
 
   /**
-   * Initialize periodic polling for printer change detection.
-   * Replaces the USB hot-plug watcher used in the old libusb-based implementation.
+   * Initialize printer service.
+   * Polling removed — printers are scanned on demand via listPrinters()
+   * when user opens the print settings page.
    */
   initUSBWatcher() {
-    if (this.pollTimer) return;
-
-    log.info('[PrinterService] Starting printer polling (interval: %dms)', POLL_INTERVAL);
-
-    // Do an initial scan
-    this._pollPrinters();
-    // Set up periodic polling
-    this.pollTimer = setInterval(this._pollPrinters, POLL_INTERVAL);
+    log.info('[PrinterService] Initialized (on-demand scan mode, no polling)');
+    // No polling — listPrinters() is called explicitly by the renderer when needed
   }
 
   /**
@@ -371,10 +360,6 @@ class PrinterService extends EventEmitter {
    * Clean up resources
    */
   destroy() {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
     this.knownPrinters.clear();
     this.removeAllListeners();
   }
@@ -482,81 +467,7 @@ class PrinterService extends EventEmitter {
     }
   }
 
-  /**
-   * Poll for printer changes by re-scanning installed printers.
-   * Emits 'printer-attached' and 'printer-detached' events when changes are detected.
-   * @private
-   */
-  async _pollPrinters() {
-    if (this.polling) return; // Skip if previous poll is still running
-    this.polling = true;
-
-    try {
-      const currentPrinters = await this._scanPrinters();
-      const currentNames = new Set(currentPrinters.map((p) => p.name));
-      const previousNames = new Set(this.knownPrinters.keys());
-
-      // Detect newly attached printers
-      for (const name of currentNames) {
-        if (!previousNames.has(name)) {
-          const info = currentPrinters.find((p) => p.name === name);
-          log.info(`[PrinterService] Printer attached: "${name}"`);
-          this.knownPrinters.set(name, info);
-          this.emit('printer-attached', name);
-        }
-      }
-
-      // Detect detached printers
-      for (const name of previousNames) {
-        if (!currentNames.has(name)) {
-          log.info(`[PrinterService] Printer detached: "${name}"`);
-          this.knownPrinters.delete(name);
-          this.emit('printer-detached', name);
-        }
-      }
-
-      // Emit status if changed
-      if (currentNames.size !== previousNames.size ||
-          [...currentNames].some((n) => !previousNames.has(n))) {
-        this.emit('status', {
-          connected: this.knownPrinters.size > 0,
-          printers: Array.from(this.knownPrinters.keys()),
-        });
-      }
-    } catch (err) {
-      log.debug('[PrinterService] Poll error:', err.message);
-    } finally {
-      this.polling = false;
-    }
-  }
-
-  /**
-   * Quick scan of installed printers (without updating knownPrinters map).
-   * @returns {Promise<Array<{name: string, driverName: string, port: string}>>}
-   * @private
-   */
-  async _scanPrinters() {
-    try {
-      const output = await this._runPowerShell(PS_LIST_PRINTERS, LIST_TIMEOUT);
-      if (!output || output.trim() === '' || output.trim() === '[]') {
-        return [];
-      }
-      const parsed = JSON.parse(output);
-      const printers = Array.isArray(parsed) ? parsed : [parsed];
-      return printers
-        .filter((p) => p.Name)
-        .map((p) => ({
-          name: p.Name,
-          driverName: p.DriverName || '',
-          port: p.PortName || '',
-          shared: p.Shared || false,
-          status: p.PrinterStatus,
-        }));
-    } catch (err) {
-      log.debug('[PrinterService] Scan error:', err.message);
-      return [];
-    }
-  }
+  // ★ Polling removed — printers are scanned on demand via listPrinters()
 
   /**
    * Run a PowerShell script using a temp file for reliable encoding.

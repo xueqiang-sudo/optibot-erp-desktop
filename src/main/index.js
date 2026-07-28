@@ -171,21 +171,19 @@ document.getElementById('n').onclick=()=>ipcRenderer.send('quit-dialog:response'
   const { session } = require('electron');
   const targetUrl = new URL(FRAPPE_URL);
 
+  // ★ Only intercept requests to the target origin (reduces CPU overhead significantly)
+  const requestFilter = {
+    urls: [`${targetUrl.protocol}//${targetUrl.host}/*`],
+  };
+
   session.defaultSession.webRequest.onBeforeSendHeaders(
+    requestFilter,
     (details, callback) => {
-      // Only modify requests to our target origin
-      try {
-        const reqUrl = new URL(details.url);
-        if (reqUrl.hostname === targetUrl.hostname && reqUrl.port === targetUrl.port) {
-          details.requestHeaders['Host'] = targetUrl.host;
-          details.requestHeaders['User-Agent'] = details.requestHeaders['User-Agent'].replace(
-            /Electron\/[\d.]+/,
-            'Chrome/120.0.0.0'
-          );
-        }
-      } catch (e) {
-        // ignore URL parse errors
-      }
+      details.requestHeaders['Host'] = targetUrl.host;
+      details.requestHeaders['User-Agent'] = details.requestHeaders['User-Agent'].replace(
+        /Electron\/[\d.]+/,
+        'Chrome/120.0.0.0'
+      );
       callback({ requestHeaders: details.requestHeaders });
     }
   );
@@ -313,11 +311,8 @@ function doRefresh(){ipcRenderer.send('app:refresh-page')}
     _injectBridge();
   });
 
-  // Handle SPA navigation
-  mainWindow.webContents.on('did-navigate-in-page', () => {
-    log.debug('In-page navigation detected');
-    _injectBridge();
-  });
+  // ★ SPA navigation does not need re-injection — bridge persists via window globals
+  // and _optibotBridgeInitialized guard prevents double init
 
   // Log the page title after load
   mainWindow.webContents.on('page-title-updated', (event, title) => {
